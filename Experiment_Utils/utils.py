@@ -123,6 +123,104 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         "best_val_rmse": best_val_rmse,
     }
 
+def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device='cuda'):
+    """
+    Training loop for a non-variational autoencoder using reconstruction loss (MSE).
+    """
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=5, factor=0.5)
+    
+    train_rmse_per_epoch = []
+    val_rmse_per_epoch = []
+    train_recon_loss_per_epoch = []
+    val_recon_loss_per_epoch = []
+    
+    best_val_rmse = float('inf')  # Track the best (lowest) validation RMSE
+    best_model_state = None  # Save the best model state
+    
+    for epoch in range(epochs):
+        # Training
+        model.train()
+        running_loss = 0.0
+        running_rmse = 0.0
+        running_recon_loss = 0.0
+        items = 0
+        
+        for x, _ in train_data:
+            batch_size = x.size(0)
+            data = x.to(device)
+            
+            opt.zero_grad()
+            
+            x_hat = model(data)
+            
+            recon_loss = F.mse_loss(data, x_hat, reduction="sum")
+            loss = recon_loss
+            
+            batch_rmse = torch.sqrt(F.mse_loss(data, x_hat, reduction="mean"))
+            
+            loss.backward()
+            opt.step()
+            
+            items += batch_size
+            running_loss += loss.item()
+            running_rmse += batch_rmse.item() * batch_size  # weighted sum
+            running_recon_loss += recon_loss.item()
+        
+        scheduler.step(running_loss / items)
+        avg_train_rmse = running_rmse / items
+        avg_train_recon_loss = running_recon_loss / items
+        
+        train_rmse_per_epoch.append(avg_train_rmse)
+        train_recon_loss_per_epoch.append(avg_train_recon_loss)
+        
+        # Validation
+        model.eval()
+        val_rmse = 0.0
+        val_recon_loss = 0.0
+        val_items = 0
+        
+        with torch.no_grad():
+            for x, _ in val_data:
+                batch_size = x.size(0)
+                data = x.to(device)
+                
+                x_hat = model(data)
+                
+                loss = F.mse_loss(data, x_hat, reduction="sum")
+                batch_val_rmse = torch.sqrt(F.mse_loss(data, x_hat, reduction="mean"))
+                
+                val_items += batch_size
+                val_recon_loss += loss.item()
+                val_rmse += batch_val_rmse.item() * batch_size
+        
+        avg_val_rmse = val_rmse / val_items
+        avg_val_recon_loss = val_recon_loss / val_items
+        
+        val_rmse_per_epoch.append(avg_val_rmse)
+        val_recon_loss_per_epoch.append(avg_val_recon_loss)
+        
+        # Check and save the best model state if current validation RMSE is lower
+        if avg_val_rmse < best_val_rmse:
+            print(f"Epoch {epoch+1}: Saving best model state with RMSE: {avg_val_rmse:.4f}")
+            best_val_rmse = avg_val_rmse
+            best_model_state = model.state_dict().copy()  # make a copy to preserve
+        
+        print(f"Epoch {epoch+1}, Train RMSE: {avg_train_rmse:.4f}, Val RMSE: {avg_val_rmse:.4f}, " +
+              f"Recon Loss (Train): {avg_train_recon_loss:.4f}, Recon Loss (Val): {avg_val_recon_loss:.4f}")
+    
+    # Load the best model state back into the model
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+    
+    return {
+        "train_rmse_per_epoch": train_rmse_per_epoch,
+        "val_rmse_per_epoch": val_rmse_per_epoch,
+        "train_recon_loss_per_epoch": train_recon_loss_per_epoch,
+        "val_recon_loss_per_epoch": val_recon_loss_per_epoch,
+        "best_val_rmse": best_val_rmse,
+    }
+
 def kl_divergence_loss(mean, logvar):
     """
     Compute KL divergence loss for VAE
