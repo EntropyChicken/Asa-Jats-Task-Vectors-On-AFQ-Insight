@@ -62,8 +62,8 @@ class Conv1DVariationalDecoder_fa(nn.Module):
 class Conv1DVariationalAutoencoder_fa(nn.Module):
     def __init__(self, latent_dims=20, dropout=0.0):
         super().__init__()
-        self.encoder = Conv1DEncoder_fa(latent_dims, dropout=dropout)
-        self.decoder = Conv1DDecoder_fa(latent_dims)
+        self.encoder = Conv1DVariationalEncoder_fa(latent_dims, dropout=dropout)
+        self.decoder = Conv1DVariationalDecoder_fa(latent_dims)
         self.latent_dims = latent_dims
         
     def reparameterize(self, mean, logvar):
