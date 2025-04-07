@@ -2,23 +2,35 @@ import torch
 import torch.nn.functional as F
 from afqinsight.datasets import AFQDataset
 from afqinsight.nn.utils import prep_pytorch_data
+from torch.cuda.amp import autocast, GradScaler
 
 def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, kl_weight=0.001, device = 'cuda'):
     """
     Training loop for variational autoencoder with KL annealing
     """
+    torch.backends.cudnn.benchmark = True
+
+    latent_dim = model.latent_dims if hasattr(model, 'latent_dims') else "unknown"
+    dropout = model.dropout if hasattr(model, 'dropout') else "unknown"
+    
+    # Create a unique model filename
+    model_filename = f"best_vae_model_ld{latent_dim}_dr{dropout}.pth"
+
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=5, factor=0.5)
     
+    scaler = torch.amp.GradScaler(device=device)  # For mixed precision training
+
     train_rmse_per_epoch = []
     val_rmse_per_epoch = []
     train_kl_per_epoch = []
-    val_kl_per_epoch = []
+    val_kl_per_epoch = []   
     train_recon_per_epoch = []
     val_recon_per_epoch = []
     
     best_val_rmse = float('inf')  # Track the best (lowest) validation RMSE
     best_model_state = None  # Save the best model state
+    best_epoch = 0
 
     #lets try KL annealing
     beta_start = 0.0
@@ -37,25 +49,27 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         
         for x, _ in train_data:
             batch_size = x.size(0)
-            tract_data = x.to(device)
+            tract_data = x.to(device, non_blocking=True)
             
-            opt.zero_grad()
+            opt.zero_grad(set_to_none=True)
             
             # Forward pass returns reconstructed x, mean and logvar
-            x_hat, mean, logvar = model(tract_data)
-            
-            # Compute loss with KL divergence
-            loss, recon_loss, kl_loss = vae_loss(tract_data, x_hat, mean, logvar, beta, reduction="sum")
-            #recon loss here is the sum of the MSE
-            #loss is the sum of the KL and the recon loss
-            #kl loss is the sum of the KL
-            #none are normalized yet 
+            with torch.amp.autocast(device_type= "cuda"):
+                x_hat, mean, logvar = model(tract_data)
+                
+                # Compute loss with KL divergence
+                loss, recon_loss, kl_loss = vae_loss(tract_data, x_hat, mean, logvar, beta, reduction="sum")
+                #recon loss here is the sum of the MSE
+                #loss is the sum of the KL and the recon loss
+                #kl loss is the sum of the KL
+                #none are normalized yet 
 
-            # Calculate RMSE (primarily for logging)
-            batch_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
+                # Calculate RMSE (primarily for logging)
+                batch_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
             
-            loss.backward()
-            opt.step()
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
               
             #increasing by batch size
             items += batch_size
@@ -82,13 +96,15 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         with torch.no_grad():
             for x, *_ in val_data:
                 batch_size = x.size(0)
-                tract_data = x.to(device)
+                tract_data = x.to(device, non_blocking=True)
                 
-                x_hat, mean, logvar = model(tract_data)
-                
-                val_loss, val_recon_loss, val_kl_loss = vae_loss(tract_data, x_hat, mean, logvar, beta, reduction="sum")
-                
-                batch_val_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
+                with torch.amp.autocast(device_type = "cuda"):
+
+                    x_hat, mean, logvar = model(tract_data)
+                    
+                    val_loss, val_recon_loss, val_kl_loss = vae_loss(tract_data, x_hat, mean, logvar, beta, reduction="sum")
+                    
+                    batch_val_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
 
                 val_items += batch_size
                 val_loss += val_loss.item()
@@ -105,15 +121,16 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         
         # Check and save the best model state if current validation loss is lower
         if avg_val_rmse < best_val_rmse:
-            print("Saving best model state with RMSE:", avg_val_rmse)
+            print(f"Saving best model state with RMSE: {avg_val_rmse:.4f} at epoch {epoch+1}")
             best_val_rmse = avg_val_rmse
             best_model_state = model.state_dict().copy()  # Make a copy to ensure it's preserved
+            best_epoch = epoch + 1  # Make a copy to ensure it's preserved
+
+            torch.save(best_model_state, model_filename)
+            print(f"Best model saved to: {model_filename}")
         
         print(f"Epoch {epoch+1}, Train RMSE: {avg_train_rmse:.4f}, Val RMSE: {avg_val_rmse:.4f}, KL: {avg_train_kl:.4f}," ,
               f"Recon Loss (Train): {avg_train_recon_loss:.4f}, Recon Loss (Val): {avg_val_recon_loss:.4f}")
-    
-    # Load the best model state back into the model
-    model.load_state_dict(best_model_state)
     
     return {
         "train_rmse_per_epoch": train_rmse_per_epoch,
@@ -123,22 +140,35 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         "train_recon_per_epoch": train_recon_per_epoch,
         "val_recon_per_epoch": val_recon_per_epoch,
         "best_val_rmse": best_val_rmse,
+        "best_epoch": best_epoch,
+        "model_path": model_filename
     }
 
 def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device='cuda'):
     """
     Training loop for a non-variational autoencoder using reconstruction loss (MSE).
     """
+    torch.backends.cudnn.benchmark = True
+    
+    # Extract model parameters for naming the saved file
+    latent_dim = model.latent_dims if hasattr(model, 'latent_dims') else "unknown"
+    dropout = model.dropout if hasattr(model, 'dropout') else "unknown"
+    
+    # Create a unique model filename
+    model_filename = f"best_ae_model_ld{latent_dim}_dr{dropout}.pth"
+
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=5, factor=0.5)
     
+    scaler = torch.amp.GradScaler(device=device)  # For mixed precision training
+
     train_rmse_per_epoch = []
     val_rmse_per_epoch = []
     train_recon_loss_per_epoch = []
     val_recon_loss_per_epoch = []
     
     best_val_rmse = float('inf')  # Track the best (lowest) validation RMSE
-    best_model_state = None  # Save the best model state
+    best_epoch = 0  # Track which epoch had the best performance
     
     for epoch in range(epochs):
         # Training
@@ -150,19 +180,22 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device=
         
         for x, _ in train_data:
             batch_size = x.size(0)
-            data = x.to(device)
+            data = x.to(device, non_blocking=True)
             
-            opt.zero_grad()
+            opt.zero_grad(set_to_none=True)
             
-            x_hat = model(data)
+            with torch.amp.autocast(device_type="cuda"):
+                # Forward pass
+                x_hat = model(data)
+                
+                recon_loss = F.mse_loss(data, x_hat, reduction="sum")
+                loss = recon_loss
+                
+                batch_rmse = torch.sqrt(F.mse_loss(data, x_hat, reduction="mean"))
             
-            recon_loss = F.mse_loss(data, x_hat, reduction="sum")
-            loss = recon_loss
-            
-            batch_rmse = torch.sqrt(F.mse_loss(data, x_hat, reduction="mean"))
-            
-            loss.backward()
-            opt.step()
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
             
             items += batch_size
             running_loss += loss.item()
@@ -185,12 +218,14 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device=
         with torch.no_grad():
             for x, _ in val_data:
                 batch_size = x.size(0)
-                data = x.to(device)
+                data = x.to(device, non_blocking=True)
                 
-                x_hat = model(data)
-                
-                loss = F.mse_loss(data, x_hat, reduction="sum")
-                batch_val_rmse = torch.sqrt(F.mse_loss(data, x_hat, reduction="mean"))
+                with torch.amp.autocast(device_type="cuda"):
+                    # Forward pass
+                    x_hat = model(data)
+                    
+                    loss = F.mse_loss(data, x_hat, reduction="sum")
+                    batch_val_rmse = torch.sqrt(F.mse_loss(data, x_hat, reduction="mean"))
                 
                 val_items += batch_size
                 val_recon_loss += loss.item()
@@ -206,14 +241,17 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device=
         if avg_val_rmse < best_val_rmse:
             print(f"Epoch {epoch+1}: Saving best model state with RMSE: {avg_val_rmse:.4f}")
             best_val_rmse = avg_val_rmse
-            best_model_state = model.state_dict().copy()  # make a copy to preserve
+            best_epoch = epoch + 1
+            
+            # Save the best model weights to disk
+            torch.save(model.state_dict(), model_filename)
+            print(f"Best model saved to: {model_filename}")
         
         print(f"Epoch {epoch+1}, Train RMSE: {avg_train_rmse:.4f}, Val RMSE: {avg_val_rmse:.4f}, " +
               f"Recon Loss (Train): {avg_train_recon_loss:.4f}, Recon Loss (Val): {avg_val_recon_loss:.4f}")
-    
-    # Load the best model state back into the model
-    if best_model_state is not None:
-        model.load_state_dict(best_model_state)
+        
+    print(f"Training complete. Best model was from epoch {best_epoch} with validation RMSE: {best_val_rmse:.4f}")
+    print(f"Best model saved to: {model_filename}")
     
     return {
         "train_rmse_per_epoch": train_rmse_per_epoch,
@@ -221,6 +259,8 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device=
         "train_recon_loss_per_epoch": train_recon_loss_per_epoch,
         "val_recon_loss_per_epoch": val_recon_loss_per_epoch,
         "best_val_rmse": best_val_rmse,
+        "best_epoch": best_epoch,
+        "model_path": model_filename
     }
 
 def kl_divergence_loss(mean, logvar):
