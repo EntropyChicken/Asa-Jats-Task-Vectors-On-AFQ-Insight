@@ -21,8 +21,10 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
     """
     torch.backends.cudnn.benchmark = True
 
+    # Get latent dimensions and dropout from the model
     latent_dim = model.latent_dims if hasattr(model, 'latent_dims') else "unknown"
-    dropout = model.dropout if hasattr(model, 'dropout') else "unknown"
+    # Get dropout from the encoder component
+    dropout = model.encoder.dropout.p if hasattr(model, 'encoder') and hasattr(model.encoder, 'dropout') else "unknown"
     
     # Create a unique model filename
     model_filename = f"best_vae_model_ld{latent_dim}_dr{dropout}.pth"
@@ -156,15 +158,16 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         "model_path": model_filename
     }
 
-def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device='cuda'):
+def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device = 'cuda'):
     """
-    Training loop for a non-variational autoencoder using reconstruction loss (MSE).
+    Training loop for standard autoencoder
     """
     torch.backends.cudnn.benchmark = True
-    
-    # Extract model parameters for naming the saved file
+
+    # Get latent dimensions and dropout from the model
     latent_dim = model.latent_dims if hasattr(model, 'latent_dims') else "unknown"
-    dropout = model.dropout if hasattr(model, 'dropout') else "unknown"
+    # Get dropout from the encoder component
+    dropout = model.encoder.dropout.p if hasattr(model, 'encoder') and hasattr(model.encoder, 'dropout') else "unknown"
     
     # Create a unique model filename
     model_filename = f"best_ae_model_ld{latent_dim}_dr{dropout}.pth"
@@ -180,64 +183,67 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device=
     val_recon_loss_per_epoch = []
     
     best_val_rmse = float('inf')  # Track the best (lowest) validation RMSE
-    best_epoch = 0  # Track which epoch had the best performance
+    best_model_state = None  # Save the best model state
+    best_epoch = 0
     
     for epoch in range(epochs):
         # Training
         model.train()
-        running_loss = 0.0
-        running_rmse = 0.0
-        running_recon_loss = 0.0
+        running_loss = 0
+        running_rmse = 0
         items = 0
+        running_recon_loss = 0
         
         for x, _ in train_data:
             batch_size = x.size(0)
-            data = x.to(device, non_blocking=True)
+            tract_data = x.to(device, non_blocking=True)
             
             opt.zero_grad(set_to_none=True)
             
-            with torch.amp.autocast(device_type="cuda"):
-                # Forward pass
-                x_hat = model(data)
+            # Forward pass
+            with torch.amp.autocast(device_type= "cuda"):
+                x_hat = model(tract_data)
                 
-                recon_loss = F.mse_loss(data, x_hat, reduction="sum")
+                # Compute loss
+                recon_loss = F.mse_loss(tract_data, x_hat, reduction="sum")
                 loss = recon_loss
                 
-                batch_rmse = torch.sqrt(F.mse_loss(data, x_hat, reduction="mean"))
+                # Calculate RMSE (primarily for logging)
+                batch_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
             
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
-            
+              
+            #increasing by batch size
             items += batch_size
             running_loss += loss.item()
-            running_rmse += batch_rmse.item() * batch_size  # weighted sum
-            running_recon_loss += recon_loss.item()
+            running_rmse += batch_rmse.item() * batch_size  # Weighted sum
+            running_recon_loss += recon_loss.item() # Average recon loss per item
         
         scheduler.step(running_loss / items)
         avg_train_rmse = running_rmse / items
         avg_train_recon_loss = running_recon_loss / items
-        
         train_rmse_per_epoch.append(avg_train_rmse)
         train_recon_loss_per_epoch.append(avg_train_recon_loss)
         
         # Validation
         model.eval()
-        val_rmse = 0.0
-        val_recon_loss = 0.0
+        val_rmse = 0
+        val_recon_loss = 0
         val_items = 0
         
         with torch.no_grad():
             for x, _ in val_data:
                 batch_size = x.size(0)
-                data = x.to(device, non_blocking=True)
+                tract_data = x.to(device, non_blocking=True)
                 
                 with torch.amp.autocast(device_type="cuda"):
                     # Forward pass
-                    x_hat = model(data)
+                    x_hat = model(tract_data)
                     
-                    loss = F.mse_loss(data, x_hat, reduction="sum")
-                    batch_val_rmse = torch.sqrt(F.mse_loss(data, x_hat, reduction="mean"))
+                    loss = F.mse_loss(tract_data, x_hat, reduction="sum")
+                    batch_val_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
                 
                 val_items += batch_size
                 val_recon_loss += loss.item()
