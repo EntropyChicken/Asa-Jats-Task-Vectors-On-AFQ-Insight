@@ -3,6 +3,17 @@ import torch.nn.functional as F
 from afqinsight.datasets import AFQDataset
 from afqinsight.nn.utils import prep_pytorch_data
 from torch.cuda.amp import autocast, GradScaler
+import numpy as np
+
+def get_beta(current_epoch, total_epochs, start_epoch=100):
+    if current_epoch < start_epoch:
+        return 0.0
+    
+    progress = (current_epoch - start_epoch) / (total_epochs - start_epoch)
+    
+    beta = 1.0 / (1.0 + np.exp(-10 * (progress - 0.5)))
+
+    return beta
 
 def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, kl_weight=0.001, device = 'cuda'):
     """
@@ -45,7 +56,8 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         running_kl = 0
         items = 0
         running_recon_loss = 0 
-        beta = beta_start + slope * epoch
+        # beta = beta_start + slope * epoch
+        beta = get_beta(epoch, epochs)
         
         for x, _ in train_data:
             batch_size = x.size(0)
