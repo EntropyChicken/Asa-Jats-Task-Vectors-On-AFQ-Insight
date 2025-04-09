@@ -36,6 +36,7 @@ class Conv1DVariationalEncoder_fa(nn.Module):
         mean = self.fc_mean(x)
         logvar = self.fc_logvar(x)    
 
+        print("mean_shape", mean.shape)
         return mean, logvar
 
 class Conv1DVariationalDecoder_fa(nn.Module):
