@@ -15,9 +15,9 @@ def get_beta(current_epoch, total_epochs, start_epoch=100):
 
     return beta
 
-def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, kl_weight=0.001, device = 'cuda'):
+def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device = 'cuda', beta=1.0, kl_annealing_epochs=100, max_grad_norm=1.0):
     """
-    Training loop for variational autoencoder with KL annealing
+    Training loop for variational autoencoder
     """
     torch.backends.cudnn.benchmark = True
 
@@ -36,30 +36,27 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
 
     train_rmse_per_epoch = []
     val_rmse_per_epoch = []
-    train_kl_per_epoch = []
-    val_kl_per_epoch = []   
     train_recon_per_epoch = []
     val_recon_per_epoch = []
+    train_kl_per_epoch = []
+    val_kl_per_epoch = []
     
     best_val_rmse = float('inf')  # Track the best (lowest) validation RMSE
     best_model_state = None  # Save the best model state
     best_epoch = 0
-
-    #lets try KL annealing
-    beta_start = 0.0
-    beta_end = 1.0
-    slope = (beta_end - beta_start) / epochs
     
     for epoch in range(epochs):
+        # Calculate KL annealing factor
+        kl_annealing_factor = min(1.0, epoch / kl_annealing_epochs)
+        current_beta = beta * kl_annealing_factor
+        
         # Training
         model.train()
         running_loss = 0
         running_rmse = 0
         running_kl = 0
         items = 0
-        running_recon_loss = 0 
-        # beta = beta_start + slope * epoch
-        beta = get_beta(epoch, epochs)
+        running_recon_loss = 0
         
         for x, _ in train_data:
             batch_size = x.size(0)
@@ -72,16 +69,25 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
                 x_hat, mean, logvar = model(tract_data)
                 
                 # Compute loss with KL divergence
-                loss, recon_loss, kl_loss = vae_loss(tract_data, x_hat, mean, logvar, beta, reduction="sum")
+                loss, recon_loss, kl_loss = vae_loss(tract_data, x_hat, mean, logvar, current_beta, reduction="sum")
                 #recon loss here is the sum of the MSE
                 #loss is the sum of the KL and the recon loss
                 #kl loss is the sum of the KL
                 #none are normalized yet 
-
+                
                 # Calculate RMSE (primarily for logging)
                 batch_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
             
-            scaler.scale(loss).backward()
+            # Scale the total loss for backward pass
+            scaled_loss = scaler.scale(loss)
+            scaled_loss.backward()
+            
+            # Unscale gradients for clipping
+            scaler.unscale_(opt)
+            # Clip gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+            
+            # Step optimizer with scaled gradients
             scaler.step(opt)
             scaler.update()
               
@@ -106,6 +112,7 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         val_kl = 0
         val_items = 0
         val_recon_loss = 0
+        val_loss_total = 0
         
         with torch.no_grad():
             for x, *_ in val_data:
@@ -116,12 +123,12 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
 
                     x_hat, mean, logvar = model(tract_data)
                     
-                    val_loss, val_recon_loss, val_kl_loss = vae_loss(tract_data, x_hat, mean, logvar, beta, reduction="sum")
+                    val_loss, val_recon_loss, val_kl_loss = vae_loss(tract_data, x_hat, mean, logvar, current_beta, reduction="sum")
                     
                     batch_val_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
 
                 val_items += batch_size
-                val_loss += val_loss.item()
+                val_loss_total += val_loss.item()
                 val_rmse += batch_val_rmse.item() * tract_data.size(0)
                 val_kl += val_kl_loss.item()
                 val_recon_loss += val_recon_loss.item()
@@ -158,7 +165,7 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         "model_path": model_filename
     }
 
-def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device = 'cuda'):
+def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device = 'cuda', max_grad_norm=1.0):
     """
     Training loop for standard autoencoder
     """
@@ -211,7 +218,16 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device 
                 # Calculate RMSE (primarily for logging)
                 batch_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
             
-            scaler.scale(loss).backward()
+            # Scale the total loss for backward pass
+            scaled_loss = scaler.scale(loss)
+            scaled_loss.backward()
+            
+            # Unscale gradients for clipping
+            scaler.unscale_(opt)
+            # Clip gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+            
+            # Step optimizer with scaled gradients
             scaler.step(opt)
             scaler.update()
               
