@@ -15,9 +15,9 @@ def get_beta(current_epoch, total_epochs, start_epoch=100):
 
     return beta
 
-def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device = 'cuda', beta=1.0, kl_annealing_epochs=100, max_grad_norm=1.0):
+def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device = 'cuda', beta=1.0, kl_annealing_epochs=200, max_grad_norm=1.0, kl_annealing_start=0.0001):
     """
-    Training loop for variational autoencoder
+    Training loop for variational autoencoder with aggressive KL annealing
     """
     torch.backends.cudnn.benchmark = True
 
@@ -46,8 +46,15 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
     best_epoch = 0
     
     for epoch in range(epochs):
-        # Calculate KL annealing factor
-        kl_annealing_factor = min(1.0, epoch / kl_annealing_epochs)
+        if epoch < kl_annealing_epochs:
+            # Sigmoid annealing from near-zero to 1.0
+            progress = epoch / kl_annealing_epochs
+            kl_annealing_factor = kl_annealing_start + (1.0 - kl_annealing_start) * (
+                1 / (1 + np.exp(-10 * (progress - 0.5)))
+            )
+        else:
+            kl_annealing_factor = 1.0
+            
         current_beta = beta * kl_annealing_factor
         
         # Training
@@ -112,7 +119,7 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         val_kl = 0
         val_items = 0
         val_recon_loss = 0
-        val_loss_total = 0
+        val_loss_total = 0  # Track total validation loss
         
         with torch.no_grad():
             for x, *_ in val_data:
@@ -120,22 +127,22 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
                 tract_data = x.to(device, non_blocking=True)
                 
                 with torch.amp.autocast(device_type = "cuda"):
-
                     x_hat, mean, logvar = model(tract_data)
                     
-                    val_loss, val_recon_loss, val_kl_loss = vae_loss(tract_data, x_hat, mean, logvar, current_beta, reduction="sum")
-                    
+                    val_loss, val_recon_loss_batch, val_kl_loss_batch = vae_loss(tract_data, x_hat, mean, logvar, current_beta, reduction="sum")
                     batch_val_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
-
+                
                 val_items += batch_size
                 val_loss_total += val_loss.item()
-                val_rmse += batch_val_rmse.item() * tract_data.size(0)
-                val_kl += val_kl_loss.item()
-                val_recon_loss += val_recon_loss.item()
+                val_rmse += batch_val_rmse.item() * batch_size
+                val_kl += val_kl_loss_batch.item()
+                val_recon_loss += val_recon_loss_batch.item()
         
         avg_val_recon_loss = val_recon_loss / val_items
         avg_val_rmse = val_rmse / val_items
         avg_val_kl = val_kl / val_items
+        avg_val_loss = val_loss_total / val_items
+        
         val_rmse_per_epoch.append(avg_val_rmse)
         val_kl_per_epoch.append(avg_val_kl)
         val_recon_per_epoch.append(avg_val_recon_loss)
@@ -146,12 +153,14 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
             best_val_rmse = avg_val_rmse
             best_model_state = model.state_dict().copy()  # Make a copy to ensure it's preserved
             best_epoch = epoch + 1  # Make a copy to ensure it's preserved
-
+            
             torch.save(best_model_state, model_filename)
             print(f"Best model saved to: {model_filename}")
         
-        print(f"Epoch {epoch+1}, Train RMSE: {avg_train_rmse:.4f}, Val RMSE: {avg_val_rmse:.4f}, KL: {avg_train_kl:.4f}," ,
+        print(f"Epoch {epoch+1}, KL Weight: {current_beta:.6f}, Train RMSE: {avg_train_rmse:.4f}, Val RMSE: {avg_val_rmse:.4f}, KL: {avg_train_kl:.4f}," ,
               f"Recon Loss (Train): {avg_train_recon_loss:.4f}, Recon Loss (Val): {avg_val_recon_loss:.4f}")
+    
+    print(f"Training complete. Best model was from epoch {best_epoch} with validation RMSE: {best_val_rmse:.4f}")
     
     return {
         "train_rmse_per_epoch": train_rmse_per_epoch,
