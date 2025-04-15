@@ -40,6 +40,8 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
     val_recon_per_epoch = []
     train_kl_per_epoch = []
     val_kl_per_epoch = []
+    train_loss_per_epoch = []
+    val_loss_per_epoch = []
     
     best_val_rmse = float('inf')  
     best_model_state = None  
@@ -102,10 +104,12 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         avg_train_recon_loss = running_recon_loss / items
         # Calculate average KL loss carefully, avoiding division by zero if beta was 0
         avg_train_kl = (running_kl / items) if current_beta > 0 else 0.0 
+        avg_train_loss = running_loss / items
         
         train_rmse_per_epoch.append(avg_train_rmse)
         train_kl_per_epoch.append(avg_train_kl)
         train_recon_per_epoch.append(avg_train_recon_loss)
+        train_loss_per_epoch.append(avg_train_loss)
 
         # Validation
         model.eval()
@@ -144,6 +148,7 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         val_rmse_per_epoch.append(avg_val_rmse)
         val_kl_per_epoch.append(avg_val_kl)
         val_recon_per_epoch.append(avg_val_recon_loss)
+        val_loss_per_epoch.append(avg_val_loss)
         
         # Check and save the best model state if current validation loss is lower
         if avg_val_rmse < best_val_rmse:
@@ -167,6 +172,8 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         "val_kl_per_epoch": val_kl_per_epoch,
         "train_recon_per_epoch": train_recon_per_epoch,
         "val_recon_per_epoch": val_recon_per_epoch,
+        "train_loss_per_epoch": train_loss_per_epoch,
+        "val_loss_per_epoch": val_loss_per_epoch,
         "best_val_rmse": best_val_rmse,
         "best_epoch": best_epoch,
         "model_path": model_filename
@@ -195,6 +202,8 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device 
     val_rmse_per_epoch = []
     train_recon_loss_per_epoch = []
     val_recon_loss_per_epoch = []
+    train_loss_per_epoch = []
+    val_loss_per_epoch = []
     
     best_val_rmse = float('inf')  # Track the best (lowest) validation RMSE
     best_model_state = None  # Save the best model state
@@ -247,8 +256,10 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device 
         scheduler.step(running_loss / items)
         avg_train_rmse = running_rmse / items
         avg_train_recon_loss = running_recon_loss / items
+        avg_train_loss = running_loss / items
         train_rmse_per_epoch.append(avg_train_rmse)
         train_recon_loss_per_epoch.append(avg_train_recon_loss)
+        train_loss_per_epoch.append(avg_train_loss)
         
         # Validation
         model.eval()
@@ -274,9 +285,11 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device 
         
         avg_val_rmse = val_rmse / val_items
         avg_val_recon_loss = val_recon_loss / val_items
+        avg_val_loss = avg_val_recon_loss
         
         val_rmse_per_epoch.append(avg_val_rmse)
         val_recon_loss_per_epoch.append(avg_val_recon_loss)
+        val_loss_per_epoch.append(avg_val_loss)
         
         # Check and save the best model state if current validation RMSE is lower
         if avg_val_rmse < best_val_rmse:
@@ -299,6 +312,8 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device 
         "val_rmse_per_epoch": val_rmse_per_epoch,
         "train_recon_loss_per_epoch": train_recon_loss_per_epoch,
         "val_recon_loss_per_epoch": val_recon_loss_per_epoch,
+        "train_loss_per_epoch": train_loss_per_epoch,
+        "val_loss_per_epoch": val_loss_per_epoch,
         "best_val_rmse": best_val_rmse,
         "best_epoch": best_epoch,
         "model_path": model_filename
