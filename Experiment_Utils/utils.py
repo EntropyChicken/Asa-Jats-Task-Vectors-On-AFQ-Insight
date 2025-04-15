@@ -24,18 +24,15 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
     """
     torch.backends.cudnn.benchmark = True
 
-    # Get latent dimensions and dropout from the model
     latent_dim = model.latent_dims if hasattr(model, 'latent_dims') else "unknown"
-    # Get dropout from the encoder component
     dropout = model.encoder.dropout.p if hasattr(model, 'encoder') and hasattr(model.encoder, 'dropout') else "unknown"
     
-    # Create a unique model filename
     model_filename = f"best_vae_model_ld{latent_dim}_dr{dropout}.pth"
 
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=5, factor=0.5)
     
-    scaler = torch.amp.GradScaler(device=device)  # For mixed precision training
+    scaler = torch.amp.GradScaler(device=device)  
 
     train_rmse_per_epoch = []
     val_rmse_per_epoch = []
@@ -44,30 +41,25 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
     train_kl_per_epoch = []
     val_kl_per_epoch = []
     
-    best_val_rmse = float('inf')  # Track the best (lowest) validation RMSE
-    best_model_state = None  # Save the best model state
+    best_val_rmse = float('inf')  
+    best_model_state = None  
     best_epoch = 0
     
     for epoch in range(epochs):
-        # Calculate KL annealing factor with delay
         if epoch < kl_annealing_start_epoch:
-            # Phase 1: No KL influence
             kl_annealing_factor = 0.0
         elif epoch < kl_annealing_start_epoch + kl_annealing_duration:
-            # Phase 2: Sigmoid Annealing starts after the delay
-            # Progress within the annealing phase (0 to 1)
+
             progress = (epoch - kl_annealing_start_epoch) / kl_annealing_duration 
-            # Sigmoid annealing from kl_annealing_start to 1.0
+
             kl_annealing_factor = kl_annealing_start + (1.0 - kl_annealing_start) * (
-                1 / (1 + np.exp(-10 * (progress - 0.5))) # Sigmoid function centered at 0.5 progress
+                1 / (1 + np.exp(-10 * (progress - 0.5))) 
             )
         else:
-            # Phase 3: Full KL influence
             kl_annealing_factor = 1.0
             
-        current_beta = beta * kl_annealing_factor # Scale the final beta by the annealing factor
+        current_beta = beta * kl_annealing_factor
         
-        # Training
         model.train()
         running_loss = 0
         running_rmse = 0
@@ -81,34 +73,25 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
             
             opt.zero_grad(set_to_none=True)
             
-            # Forward pass returns reconstructed x, mean and logvar
             with torch.amp.autocast(device_type= "cuda"):
                 x_hat, mean, logvar = model(tract_data)
                 
-                # Compute loss with KL divergence (using current_beta)
                 loss, recon_loss, kl_loss = vae_loss(tract_data, x_hat, mean, logvar, current_beta, reduction="sum")
                 
-                # Calculate RMSE (primarily for logging)
                 batch_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
             
-            # Scale the total loss for backward pass
             scaled_loss = scaler.scale(loss)
             scaled_loss.backward()
             
-            # Unscale gradients for clipping
             scaler.unscale_(opt)
-            # Clip gradients
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             
-            # Step optimizer with scaled gradients
             scaler.step(opt)
             scaler.update()
               
-            #increasing by batch size
             items += batch_size
             running_loss += loss.item()
-            running_rmse += batch_rmse.item() * batch_size  # Weighted sum
-            # Only add KL loss if it has non-zero weight to avoid misleading averages
+            running_rmse += batch_rmse.item() * batch_size 
             if current_beta > 0: 
                 running_kl += kl_loss.item()
             running_recon_loss += recon_loss.item() # Average recon loss per item
