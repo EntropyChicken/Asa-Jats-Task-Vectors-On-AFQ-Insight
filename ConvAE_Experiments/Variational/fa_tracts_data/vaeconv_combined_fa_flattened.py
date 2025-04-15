@@ -96,7 +96,6 @@ for dropout in dropout_values:
             train_data=all_tracts_train_loader,
             val_data=all_tracts_val_loader,
             epochs=500,   # or more epochs
-            kl_weight=0.001,
             device=device
         )
         
@@ -113,6 +112,8 @@ for dropout in dropout_values:
             "val_kl_per_epoch",
             "train_recon_per_epoch",
             "val_recon_per_epoch",
+            "train_loss_per_epoch",
+            "val_loss_per_epoch"
         ]
         for key in keys_to_convert:
             if key in training_results:
@@ -140,6 +141,8 @@ for dropout in dropout_values:
             "val_kl": training_results["val_kl_per_epoch"],
             "train_recon_loss": training_results["train_recon_per_epoch"],
             "val_recon_loss": training_results["val_recon_per_epoch"],
+            "train_loss": training_results["train_loss_per_epoch"],
+            "val_loss": training_results["val_loss_per_epoch"]
         })
         
         # Use f-strings to create unique filenames
