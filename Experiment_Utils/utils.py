@@ -15,9 +15,12 @@ def get_beta(current_epoch, total_epochs, start_epoch=100):
 
     return beta
 
-def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device = 'cuda', beta=1.0, kl_annealing_epochs=200, max_grad_norm=1.0, kl_annealing_start=0.0001):
+def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device = 'cuda',
+                                beta=1.0, max_grad_norm=1.0, 
+                                kl_annealing_start_epoch=200, kl_annealing_duration=200, kl_annealing_start=0.0001):
     """
-    Training loop for variational autoencoder with aggressive KL annealing
+    Training loop for variational autoencoder with delayed sigmoid KL annealing.
+    KL term has zero weight until kl_annealing_start_epoch, then anneals over kl_annealing_duration.
     """
     torch.backends.cudnn.benchmark = True
 
@@ -46,16 +49,23 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
     best_epoch = 0
     
     for epoch in range(epochs):
-        if epoch < kl_annealing_epochs:
-            # Sigmoid annealing from near-zero to 1.0
-            progress = epoch / kl_annealing_epochs
+        # Calculate KL annealing factor with delay
+        if epoch < kl_annealing_start_epoch:
+            # Phase 1: No KL influence
+            kl_annealing_factor = 0.0
+        elif epoch < kl_annealing_start_epoch + kl_annealing_duration:
+            # Phase 2: Sigmoid Annealing starts after the delay
+            # Progress within the annealing phase (0 to 1)
+            progress = (epoch - kl_annealing_start_epoch) / kl_annealing_duration 
+            # Sigmoid annealing from kl_annealing_start to 1.0
             kl_annealing_factor = kl_annealing_start + (1.0 - kl_annealing_start) * (
-                1 / (1 + np.exp(-10 * (progress - 0.5)))
+                1 / (1 + np.exp(-10 * (progress - 0.5))) # Sigmoid function centered at 0.5 progress
             )
         else:
+            # Phase 3: Full KL influence
             kl_annealing_factor = 1.0
             
-        current_beta = beta * kl_annealing_factor
+        current_beta = beta * kl_annealing_factor # Scale the final beta by the annealing factor
         
         # Training
         model.train()
@@ -75,12 +85,8 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
             with torch.amp.autocast(device_type= "cuda"):
                 x_hat, mean, logvar = model(tract_data)
                 
-                # Compute loss with KL divergence
+                # Compute loss with KL divergence (using current_beta)
                 loss, recon_loss, kl_loss = vae_loss(tract_data, x_hat, mean, logvar, current_beta, reduction="sum")
-                #recon loss here is the sum of the MSE
-                #loss is the sum of the KL and the recon loss
-                #kl loss is the sum of the KL
-                #none are normalized yet 
                 
                 # Calculate RMSE (primarily for logging)
                 batch_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
@@ -102,13 +108,18 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
             items += batch_size
             running_loss += loss.item()
             running_rmse += batch_rmse.item() * batch_size  # Weighted sum
-            running_kl += kl_loss.item() # Average KL per item
+            # Only add KL loss if it has non-zero weight to avoid misleading averages
+            if current_beta > 0: 
+                running_kl += kl_loss.item()
             running_recon_loss += recon_loss.item() # Average recon loss per item
         
-        scheduler.step(running_loss / items)
+        scheduler.step(running_loss / items) # Use total loss for scheduler
+        
         avg_train_rmse = running_rmse / items
-        avg_train_kl = running_kl / items 
         avg_train_recon_loss = running_recon_loss / items
+        # Calculate average KL loss carefully, avoiding division by zero if beta was 0
+        avg_train_kl = (running_kl / items) if current_beta > 0 else 0.0 
+        
         train_rmse_per_epoch.append(avg_train_rmse)
         train_kl_per_epoch.append(avg_train_kl)
         train_recon_per_epoch.append(avg_train_recon_loss)
@@ -129,18 +140,22 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
                 with torch.amp.autocast(device_type = "cuda"):
                     x_hat, mean, logvar = model(tract_data)
                     
+                    # Use current_beta for validation loss calculation too
                     val_loss, val_recon_loss_batch, val_kl_loss_batch = vae_loss(tract_data, x_hat, mean, logvar, current_beta, reduction="sum")
                     batch_val_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
                 
                 val_items += batch_size
                 val_loss_total += val_loss.item()
                 val_rmse += batch_val_rmse.item() * batch_size
-                val_kl += val_kl_loss_batch.item()
+                # Only add KL loss if it has non-zero weight
+                if current_beta > 0:
+                    val_kl += val_kl_loss_batch.item()
                 val_recon_loss += val_recon_loss_batch.item()
         
         avg_val_recon_loss = val_recon_loss / val_items
         avg_val_rmse = val_rmse / val_items
-        avg_val_kl = val_kl / val_items
+        # Calculate average KL loss carefully
+        avg_val_kl = (val_kl / val_items) if current_beta > 0 else 0.0
         avg_val_loss = val_loss_total / val_items
         
         val_rmse_per_epoch.append(avg_val_rmse)
@@ -157,8 +172,8 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
             torch.save(best_model_state, model_filename)
             print(f"Best model saved to: {model_filename}")
         
-        print(f"Epoch {epoch+1}, KL Weight: {current_beta:.6f}, Train RMSE: {avg_train_rmse:.4f}, Val RMSE: {avg_val_rmse:.4f}, KL: {avg_train_kl:.4f}," ,
-              f"Recon Loss (Train): {avg_train_recon_loss:.4f}, Recon Loss (Val): {avg_val_recon_loss:.4f}")
+        print(f"Epoch {epoch+1}, KL Weight: {current_beta:.6f}, Train RMSE: {avg_train_rmse:.4f}, Val RMSE: {avg_val_rmse:.4f}, KL (Train): {avg_train_kl:.4f}, KL (Val): {avg_val_kl:.4f}, "
+              f"Recon (Train): {avg_train_recon_loss:.4f}, Recon (Val): {avg_val_recon_loss:.4f}")
     
     print(f"Training complete. Best model was from epoch {best_epoch} with validation RMSE: {best_val_rmse:.4f}")
     
@@ -308,11 +323,9 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device 
 
 def kl_divergence_loss(mean, logvar):
     """
-    Compute KL divergence loss for VAE
+    KL divergence between the learned distribution and a standard Gaussian.
     """
-    kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
-    return kl_loss
-
+    return -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
 
 def vae_loss(x, x_hat, mean, logvar, kl_weight=1.0, reduction="sum"):
     """
