@@ -140,3 +140,121 @@ class Conv1DAutoencoder_fa(nn.Module):
     def forward(self, x):
         z = self.encoder(x)
         return self.decoder(z)
+
+# --- Predictor Models ---
+
+class AgePredictorCNN(nn.Module):
+    def __init__(self, input_channels=1, sequence_length=50, dropout=0.2):
+        super().__init__()
+        self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=5, stride=2, padding=2)
+        self.bn1 = nn.BatchNorm1d(32)
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=3, stride=2, padding=1)
+        self.bn2 = nn.BatchNorm1d(64)
+        self.conv3 = nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1)
+        self.bn3 = nn.BatchNorm1d(128)
+
+        self.flatten = nn.Flatten()
+        self.dropout = nn.Dropout(dropout)
+        self.relu = nn.ReLU()
+
+        _dummy_input = torch.randn(1, input_channels, sequence_length)
+        _conv_output_shape = self._get_conv_output_shape(_dummy_input)
+        flat_size = _conv_output_shape[1] * _conv_output_shape[2]
+
+        self.fc1 = nn.Linear(flat_size, 64)
+        self.fc_out = nn.Linear(64, 1)
+
+    def _get_conv_output_shape(self, x):
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.relu(self.bn2(self.conv2(x)))
+        x = self.relu(self.bn3(self.conv3(x)))
+        return x.shape
+
+    def forward(self, x):
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.dropout(x)
+        x = self.relu(self.bn2(self.conv2(x)))
+        x = self.dropout(x)
+        x = self.relu(self.bn3(self.conv3(x)))
+        x = self.dropout(x)
+
+        x = self.flatten(x)
+        x = self.relu(self.fc1(x))
+        x = self.dropout(x)
+        age_pred = self.fc_out(x)
+        return age_pred
+
+class SitePredictorCNN(nn.Module):
+    def __init__(self, num_sites=4, input_channels=1, sequence_length=50, dropout=0.2):
+        super().__init__()
+        self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=5, stride=2, padding=2)
+        self.bn1 = nn.BatchNorm1d(32)
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=3, stride=2, padding=1)
+        self.bn2 = nn.BatchNorm1d(64)
+        self.conv3 = nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1)
+        self.bn3 = nn.BatchNorm1d(128)
+
+        self.flatten = nn.Flatten()
+        self.dropout = nn.Dropout(dropout)
+        self.relu = nn.ReLU()
+
+        _dummy_input = torch.randn(1, input_channels, sequence_length)
+        _conv_output_shape = self._get_conv_output_shape(_dummy_input)
+        flat_size = _conv_output_shape[1] * _conv_output_shape[2]
+
+        self.fc1 = nn.Linear(flat_size, 64)
+        self.fc_out = nn.Linear(64, num_sites)
+
+    def _get_conv_output_shape(self, x):
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.relu(self.bn2(self.conv2(x)))
+        x = self.relu(self.bn3(self.conv3(x)))
+        return x.shape
+
+    def forward(self, x):
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.dropout(x)
+        x = self.relu(self.bn2(self.conv2(x)))
+        x = self.dropout(x)
+        x = self.relu(self.bn3(self.conv3(x)))
+        x = self.dropout(x)
+
+        x = self.flatten(x)
+        x = self.relu(self.fc1(x))
+        x = self.dropout(x)
+        site_pred = self.fc_out(x)
+        return site_pred
+
+
+# --- Combined Model ---
+
+# Ensure grad_reverse is accessible here.
+# If utils.py is not guaranteed to be imported where this models file is used,
+# you might need to copy the GradReverse class and grad_reverse function here.
+# For now, assume it will be available from an import.
+try:
+    from .utils import grad_reverse
+except ImportError:
+    # Fallback if relative import fails (e.g., script run directly)
+    try:
+        from utils import grad_reverse # Assuming utils.py is in PYTHONPATH
+    except ImportError:
+        print("Warning: grad_reverse function not found. Define or import it for CombinedVAE_Predictors.")
+        # Define a dummy grad_reverse if not found, so the class can be defined
+        def grad_reverse(x, alpha=1.0):
+            print("Warning: Using dummy grad_reverse!")
+            return x
+
+class CombinedVAE_Predictors(nn.Module):
+    def __init__(self, vae_model, age_predictor, site_predictor):
+        super().__init__()
+        self.vae = vae_model
+        self.age_predictor = age_predictor
+        self.site_predictor = site_predictor
+
+    def forward(self, x, grl_alpha=1.0):
+        x_hat, mean, logvar = self.vae(x)
+        age_pred = self.age_predictor(x_hat)
+        x_hat_reversed = grad_reverse(x_hat, grl_alpha)
+        site_pred = self.site_predictor(x_hat_reversed)
+        return x_hat, mean, logvar, age_pred, site_pred
