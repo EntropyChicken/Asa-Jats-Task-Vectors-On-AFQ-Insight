@@ -569,35 +569,12 @@ def train_variational_autoencoder_age_site(
     save_prefix="best_combined_model",
     val_metric_to_monitor="val_age_mae"
 ):
-    """
-    Training loop for a VAE combined with Age and Site predictors using adversarial training via GRL.
-    Structure mirrors train_variational_autoencoder where possible.
-
-    Args:
-        combined_model (torch.nn.Module): Model with forward(x, grl_alpha) -> (x_hat, mean, logvar, age_pred, site_pred).
-        train_data (DataLoader): Training data loader yielding (x, labels[age, site_remapped]).
-        val_data (DataLoader): Validation data loader.
-        epochs (int): Number of training epochs.
-        lr (float): Learning rate.
-        device (str): Device ("cuda" or "cpu").
-        max_grad_norm (float): Gradient clipping max norm.
-        w_recon, w_kl, w_age, w_site (float): Loss weights.
-        kl_annealing_start_epoch, kl_annealing_duration, kl_annealing_start (float): KL annealing params.
-        grl_alpha_start, grl_alpha_end, grl_alpha_epochs (float/int): GRL alpha schedule params.
-        save_prefix (str): Prefix for the saved best model filename.
-        val_metric_to_monitor (str): Key for the validation metric to track for saving the best model
-                                      (e.g., 'val_age_mae', 'val_loss'). Lower is assumed better.
-    Returns:
-        dict: Dictionary containing lists of metrics per epoch, best validation metric, best epoch, model path.
-    """
     torch.backends.cudnn.benchmark = True
 
     opt = torch.optim.Adam(combined_model.parameters(), lr=lr)
-    # Scheduler steps based on the monitored validation metric
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, "min", patience=10, factor=0.5, verbose=True)
     scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
 
-    # --- Initialize Metric Lists (similar to train_vae) ---
     train_loss_epoch = []
     val_loss_epoch = []
     train_recon_loss_epoch = []
@@ -616,8 +593,7 @@ def train_variational_autoencoder_age_site(
     current_grl_alpha_epoch = []
     current_lr_epoch = []
 
-    # --- Best Model Tracking (similar to train_vae) ---
-    best_val_metric_value = float("inf") # Lower is better by default
+    best_val_metric_value = float("inf") 
     best_model_state = None
     best_epoch = 0
     model_filename = f"{save_prefix}.pth"
@@ -661,20 +637,18 @@ def train_variational_autoencoder_age_site(
         current_beta = w_kl * kl_annealing_factor
         current_beta_epoch.append(current_beta)
 
-        # --- Loss Weights --- (Currently fixed, can be scheduled)
         current_w_recon = w_recon
         current_w_age = w_age
         current_w_site = w_site
 
         # =================== TRAINING ==================
         combined_model.train()
-        # Running accumulators for the epoch
         running_loss = 0.0
         running_recon_loss = 0.0
         running_kl_loss = 0.0
         running_age_loss = 0.0
         running_site_loss = 0.0
-        running_age_mae_sum = 0.0 # Sum of MAE * batch_size
+        running_age_mae_sum = 0.0 
         running_site_correct = 0.0
         train_items = 0
 
@@ -687,32 +661,23 @@ def train_variational_autoencoder_age_site(
             age_true = labels[:, 0].float().unsqueeze(1).to(device) #for some reason non_blocking=True causes nan values
             site_true = labels[:, 1].long().to(device, non_blocking=True) # Get remapped site index as Long
 
-            # --- DEBUG: Check for NaNs in true labels (Corrected variables) ---
             if torch.isnan(age_true).any(): print(f"train NaN found in age_true! Batch indices: {torch.where(torch.isnan(age_true))[0].tolist()}")
-            # Site should not have NaNs after mapping, but check just in case
-            # We use long(), so isnan check isn't applicable directly. Check source if issues persist.
-            # ------------------------------------------------------------------
 
             opt.zero_grad(set_to_none=True)
 
             with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                # Removed print
                 model_out = combined_model(tract_data, grl_alpha=current_grl_alpha)
                 x_hat, mean, logvar, age_pred, site_pred = model_out
-                # Removed print
-                # --- DEBUG: Check for NaNs in model outputs ---
 
                 recon_loss = recon_criterion(x_hat, tract_data)
                 kl_loss_unreduced = kl_divergence_loss(mean, logvar)
                 kl_loss = kl_loss_unreduced / batch_size # Normalize per batch item
-                # Use correct target variables
                 age_loss = age_criterion(age_pred, age_true)
                 site_loss = site_criterion(site_pred, site_true)
 
-                # --- DEBUG: Check individual loss values ---
                 if torch.isnan(recon_loss): print(f"NaN found in recon_loss!")
                 if torch.isnan(kl_loss): print(f"NaN found in kl_loss! mean={mean.mean().item():.2f}, logvar={logvar.mean().item():.2f}")
-                # Use correct target variable in debug message
+
                 if torch.isnan(age_loss): print(f"NaN found in age_loss! age_pred mean: {age_pred.mean().item():.2f}, age_true mean: {age_true.nanmean().item():.2f}, any age_true NaN: {torch.isnan(age_true).any()}")
                 if torch.isnan(site_loss): print(f"NaN found in site_loss!")
                 # -------------------------------------------
@@ -732,7 +697,6 @@ def train_variational_autoencoder_age_site(
             scaler.step(opt)
             scaler.update()
 
-            # Accumulate sums (losses are mean per item, scale by batch size)
             train_items += batch_size
             running_loss += total_loss.item() * batch_size
             running_recon_loss += recon_loss.item() * batch_size
@@ -797,7 +761,7 @@ def train_variational_autoencoder_age_site(
 
                     recon_loss = recon_criterion(x_hat, tract_data)
                     kl_loss = kl_divergence_loss(mean, logvar) / batch_size
-                    # Use correct target variables
+
                     age_loss = age_criterion(age_pred, age_true)
                     site_loss = site_criterion(site_pred, site_true)
 
