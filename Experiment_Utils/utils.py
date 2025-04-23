@@ -671,7 +671,7 @@ def train_variational_autoencoder_age_site(
 
                 recon_loss = recon_criterion(x_hat, tract_data)
                 kl_loss_unreduced = kl_divergence_loss(mean, logvar)
-                kl_loss = kl_loss_unreduced / batch_size # Normalize per batch item
+                kl_loss = kl_loss_unreduced / batch_size 
                 age_loss = age_criterion(age_pred, age_true)
                 site_loss = site_criterion(site_pred, site_true)
 
@@ -880,35 +880,7 @@ def train_variational_autoencoder_age_site(
 
     return results
 
-# Ensure kl_divergence_loss is available in the scope
-# If not, uncomment or add:
-# def kl_divergence_loss(mean, logvar):
-#     return -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=[i for i in range(1, mean.dim())])
-
 def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_site_id', age_col_name='age'):
-    """
-    Prepares PyTorch dataloaders like prep_fa_flattned_data but also remaps site IDs.
-    Selects FA tracts ONLY, flattens them per tract, and remaps site IDs.
-
-    Parameters
-    ----------
-    dataset : AFQDataset
-        The dataset to extract fa tracts from and flatten.
-    batch_size : int
-        The batch size to be used.
-    site_col_name : str
-        Name of the site column in dataset.target_cols.
-    age_col_name : str
-        Name of the age column in dataset.target_cols.
-
-    Returns
-    -------
-    tuple:
-        Original FA dataset (subsetted features),
-        New Training data loader (yields x_tract, [age, remapped_site]),
-        New Test data loader,
-        New Validation data loader.
-    """
     # 1. Prepare FA-only dataset first (reuse existing logic)
     # Assuming target_labels="dki_fa" is appropriate for selecting FA features
     torch_dataset_fa, train_loader_fa, test_loader_fa, val_loader_fa = prep_fa_dataset(
@@ -1000,3 +972,631 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
         all_tracts_test_loader,
         all_tracts_val_loader,
     )
+
+def train_vae_age_site_staged(
+    vae_model,
+    age_predictor,
+    site_predictor,
+    train_data,
+    val_data,
+    epochs_stage1=100,  # For independent training of each model
+    epochs_stage2=200,  # For adversarial training
+    lr=0.001,
+    device="cuda",
+    max_grad_norm=1.0,
+    w_recon=1.0,
+    w_kl=1.0,
+    w_age=1.0,
+    w_site=1.0,
+    kl_annealing_start_epoch=0,
+    kl_annealing_duration=50,
+    kl_annealing_start=0.001,
+    grl_alpha_start=0.0,
+    grl_alpha_end=2.5,
+    grl_alpha_epochs=100,
+    save_dir="staged_models",
+    val_metric_to_monitor="val_age_mae"
+):
+    """
+    Multi-stage training process:
+    1. Train VAE, age predictor, and site predictor separately
+    2. Freeze age and site predictors
+    3. Train combined model where VAE tries to fool site predictor while maintaining age prediction
+    
+    Args:
+        vae_model: The variational autoencoder model
+        age_predictor: The age prediction model
+        site_predictor: The site prediction model
+        train_data: Training data loader
+        val_data: Validation data loader
+        epochs_stage1: Number of epochs for independent training
+        epochs_stage2: Number of epochs for adversarial training
+        lr: Learning rate
+        device: Device to train on ('cuda' or 'cpu')
+        max_grad_norm: Maximum gradient norm for clipping
+        w_recon: Weight for reconstruction loss
+        w_kl: Weight for KL divergence loss
+        w_age: Weight for age prediction loss
+        w_site: Weight for site prediction loss
+        kl_annealing_start_epoch: Epoch to start KL annealing
+        kl_annealing_duration: Duration of KL annealing
+        kl_annealing_start: Starting value for KL annealing
+        grl_alpha_start: Starting value for gradient reversal layer
+        grl_alpha_end: Ending value for gradient reversal layer
+        grl_alpha_epochs: Number of epochs to reach max gradient reversal
+        save_dir: Directory to save models
+        val_metric_to_monitor: Validation metric to monitor for early stopping
+    """
+    import os
+    os.makedirs(save_dir, exist_ok=True)
+    
+    torch.backends.cudnn.benchmark = True
+    
+    # Move models to device
+    vae_model = vae_model.to(device)
+    age_predictor = age_predictor.to(device)
+    site_predictor = site_predictor.to(device)
+    
+    # Set up loss functions
+    recon_criterion = torch.nn.MSELoss(reduction="mean")
+    age_criterion = torch.nn.L1Loss(reduction="mean")  # MAE
+    site_criterion = torch.nn.CrossEntropyLoss(reduction="mean")
+    
+    results = {}
+    
+    # ====================================================================
+    # STAGE 1: Train each model independently
+    # ====================================================================
+    print(f"\n{'='*40}\nSTAGE 1: Training models independently\n{'='*40}")
+    
+    # --- STEP 1: Train VAE for reconstruction ---
+    print(f"\n{'-'*40}\nTraining VAE for reconstruction...\n{'-'*40}")
+    vae_optimizer = torch.optim.Adam(vae_model.parameters(), lr=lr)
+    vae_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(vae_optimizer, "min", patience=10, factor=0.5, verbose=True)
+    
+    best_vae_loss = float("inf")
+    best_vae_state = None
+    
+    # Training loop for VAE
+    for epoch in range(epochs_stage1):
+        # --- KL Beta Calculation ---
+        if kl_annealing_duration > 0 and epoch >= kl_annealing_start_epoch:
+            annealing_epoch = epoch - kl_annealing_start_epoch
+            if annealing_epoch < kl_annealing_duration:
+                progress = annealing_epoch / kl_annealing_duration
+                sigmoid_val = 1 / (1 + np.exp(-10 * (progress - 0.5)))
+                kl_annealing_factor = kl_annealing_start + (1.0 - kl_annealing_start) * sigmoid_val
+            else:
+                kl_annealing_factor = 1.0
+        else:
+            kl_annealing_factor = 0.0 if epoch < kl_annealing_start_epoch else 1.0
+        current_beta = w_kl * kl_annealing_factor
+        
+        # Training
+        vae_model.train()
+        train_recon_loss = 0.0
+        train_kl_loss = 0.0
+        train_total_loss = 0.0
+        train_items = 0
+        
+        for i, (x, _) in enumerate(train_data):
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            
+            vae_optimizer.zero_grad(set_to_none=True)
+            
+            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                x_hat, mean, logvar = vae_model(tract_data)
+                
+                recon_loss = recon_criterion(x_hat, tract_data)
+                kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                
+                total_loss = recon_loss + current_beta * kl_loss
+            
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(vae_model.parameters(), max_norm=max_grad_norm)
+            vae_optimizer.step()
+            
+            train_items += batch_size
+            train_recon_loss += recon_loss.item() * batch_size
+            train_kl_loss += kl_loss.item() * batch_size
+            train_total_loss += total_loss.item() * batch_size
+            
+            if (i + 1) % 10 == 0:
+                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(train_data)} | Loss: {total_loss.item():.4f}", end="")
+        
+        # Validation
+        vae_model.eval()
+        val_recon_loss = 0.0
+        val_kl_loss = 0.0
+        val_total_loss = 0.0
+        val_items = 0
+        
+        with torch.no_grad():
+            for x, _ in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                
+                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                    x_hat, mean, logvar = vae_model(tract_data)
+                    
+                    recon_loss = recon_criterion(x_hat, tract_data)
+                    kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                    
+                    total_loss = recon_loss + current_beta * kl_loss
+                
+                val_items += batch_size
+                val_recon_loss += recon_loss.item() * batch_size
+                val_kl_loss += kl_loss.item() * batch_size
+                val_total_loss += total_loss.item() * batch_size
+        
+        avg_train_recon_loss = train_recon_loss / train_items
+        avg_train_kl_loss = train_kl_loss / train_items
+        avg_train_total_loss = train_total_loss / train_items
+        
+        avg_val_recon_loss = val_recon_loss / val_items
+        avg_val_kl_loss = val_kl_loss / val_items
+        avg_val_total_loss = val_total_loss / val_items
+        
+        print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train Loss: {avg_train_total_loss:.4f} | Val Loss: {avg_val_total_loss:.4f} | Val Recon: {avg_val_recon_loss:.4f} | Val KL: {avg_val_kl_loss:.4f}")
+        
+        vae_scheduler.step(avg_val_total_loss)
+        
+        # Save best model
+        if avg_val_total_loss < best_vae_loss:
+            best_vae_loss = avg_val_total_loss
+            best_vae_state = vae_model.state_dict()
+            torch.save(best_vae_state, os.path.join(save_dir, "best_vae.pth"))
+            print(f"  Saved best VAE model with validation loss: {best_vae_loss:.4f}")
+    
+    # Load best VAE model
+    vae_model.load_state_dict(best_vae_state)
+    results["vae"] = {"best_val_loss": best_vae_loss}
+    
+    # --- STEP 2: Train Age Predictor ---
+    print(f"\n{'-'*40}\nTraining Age Predictor...\n{'-'*40}")
+    
+    # First, generate reconstructions from VAE (frozen)
+    print("Generating reconstructions from trained VAE...")
+    vae_model.eval()
+    age_train_data = []
+    age_val_data = []
+    
+    with torch.no_grad():
+        for x, labels in train_data:
+            tract_data = x.to(device, non_blocking=True)
+            age_labels = labels[:, 0].float().unsqueeze(1)
+            x_hat, _, _ = vae_model(tract_data)
+            age_train_data.append((x_hat.cpu(), age_labels))
+        
+        for x, labels in val_data:
+            tract_data = x.to(device, non_blocking=True)
+            age_labels = labels[:, 0].float().unsqueeze(1)
+            x_hat, _, _ = vae_model(tract_data)
+            age_val_data.append((x_hat.cpu(), age_labels))
+    
+    age_optimizer = torch.optim.Adam(age_predictor.parameters(), lr=lr)
+    age_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(age_optimizer, "min", patience=10, factor=0.5, verbose=True)
+    
+    best_age_mae = float("inf")
+    best_age_state = None
+    
+    # Training loop for Age Predictor
+    for epoch in range(epochs_stage1):
+        # Training
+        age_predictor.train()
+        train_age_loss = 0.0
+        train_items = 0
+        
+        for i, (x_hat, age_true) in enumerate(age_train_data):
+            batch_size = x_hat.size(0)
+            x_hat = x_hat.to(device, non_blocking=True)
+            age_true = age_true.to(device, non_blocking=True)
+            
+            age_optimizer.zero_grad(set_to_none=True)
+            
+            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                age_pred = age_predictor(x_hat)
+                age_loss = age_criterion(age_pred, age_true)
+            
+            age_loss.backward()
+            torch.nn.utils.clip_grad_norm_(age_predictor.parameters(), max_norm=max_grad_norm)
+            age_optimizer.step()
+            
+            train_items += batch_size
+            train_age_loss += age_loss.item() * batch_size
+            
+            if (i + 1) % 10 == 0:
+                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(age_train_data)} | MAE: {age_loss.item():.4f}", end="")
+        
+        # Validation
+        age_predictor.eval()
+        val_age_loss = 0.0
+        val_items = 0
+        
+        with torch.no_grad():
+            for x_hat, age_true in age_val_data:
+                batch_size = x_hat.size(0)
+                x_hat = x_hat.to(device, non_blocking=True)
+                age_true = age_true.to(device, non_blocking=True)
+                
+                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                    age_pred = age_predictor(x_hat)
+                    age_loss = age_criterion(age_pred, age_true)
+                
+                val_items += batch_size
+                val_age_loss += age_loss.item() * batch_size
+        
+        avg_train_age_loss = train_age_loss / train_items
+        avg_val_age_loss = val_age_loss / val_items
+        
+        print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train MAE: {avg_train_age_loss:.4f} | Val MAE: {avg_val_age_loss:.4f}")
+        
+        age_scheduler.step(avg_val_age_loss)
+        
+        # Save best model
+        if avg_val_age_loss < best_age_mae:
+            best_age_mae = avg_val_age_loss
+            best_age_state = age_predictor.state_dict()
+            torch.save(best_age_state, os.path.join(save_dir, "best_age_predictor.pth"))
+            print(f"  Saved best Age Predictor model with validation MAE: {best_age_mae:.4f}")
+    
+    # Load best Age Predictor model
+    age_predictor.load_state_dict(best_age_state)
+    results["age_predictor"] = {"best_val_mae": best_age_mae}
+    
+    # --- STEP 3: Train Site Predictor ---
+    print(f"\n{'-'*40}\nTraining Site Predictor...\n{'-'*40}")
+    
+    # Using the same reconstructions from VAE
+    site_train_data = []
+    site_val_data = []
+    
+    for x_hat, labels in age_train_data:
+        site_labels = labels[:, 1].long()
+        site_train_data.append((x_hat, site_labels))
+    
+    for x_hat, labels in age_val_data:
+        site_labels = labels[:, 1].long()
+        site_val_data.append((x_hat, site_labels))
+    
+    site_optimizer = torch.optim.Adam(site_predictor.parameters(), lr=lr)
+    site_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(site_optimizer, "min", patience=10, factor=0.5, verbose=True)
+    
+    best_site_loss = float("inf")
+    best_site_state = None
+    
+    # Training loop for Site Predictor
+    for epoch in range(epochs_stage1):
+        # Training
+        site_predictor.train()
+        train_site_loss = 0.0
+        train_site_correct = 0
+        train_items = 0
+        
+        for i, (x_hat, site_true) in enumerate(site_train_data):
+            batch_size = x_hat.size(0)
+            x_hat = x_hat.to(device, non_blocking=True)
+            site_true = site_true.to(device, non_blocking=True)
+            
+            site_optimizer.zero_grad(set_to_none=True)
+            
+            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                site_pred = site_predictor(x_hat)
+                site_loss = site_criterion(site_pred, site_true)
+            
+            site_loss.backward()
+            torch.nn.utils.clip_grad_norm_(site_predictor.parameters(), max_norm=max_grad_norm)
+            site_optimizer.step()
+            
+            train_items += batch_size
+            train_site_loss += site_loss.item() * batch_size
+            _, predicted_sites = torch.max(site_pred.data, 1)
+            train_site_correct += (predicted_sites == site_true).sum().item()
+            
+            if (i + 1) % 10 == 0:
+                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(site_train_data)} | Loss: {site_loss.item():.4f}", end="")
+        
+        # Validation
+        site_predictor.eval()
+        val_site_loss = 0.0
+        val_site_correct = 0
+        val_items = 0
+        
+        with torch.no_grad():
+            for x_hat, site_true in site_val_data:
+                batch_size = x_hat.size(0)
+                x_hat = x_hat.to(device, non_blocking=True)
+                site_true = site_true.to(device, non_blocking=True)
+                
+                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                    site_pred = site_predictor(x_hat)
+                    site_loss = site_criterion(site_pred, site_true)
+                
+                val_items += batch_size
+                val_site_loss += site_loss.item() * batch_size
+                _, predicted_sites = torch.max(site_pred.data, 1)
+                val_site_correct += (predicted_sites == site_true).sum().item()
+        
+        avg_train_site_loss = train_site_loss / train_items
+        avg_train_site_acc = (train_site_correct / train_items) * 100
+        avg_val_site_loss = val_site_loss / val_items
+        avg_val_site_acc = (val_site_correct / val_items) * 100
+        
+        print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train Loss: {avg_train_site_loss:.4f} | Train Acc: {avg_train_site_acc:.2f}% | Val Loss: {avg_val_site_loss:.4f} | Val Acc: {avg_val_site_acc:.2f}%")
+        
+        site_scheduler.step(avg_val_site_loss)
+        
+        # Save best model
+        if avg_val_site_loss < best_site_loss:
+            best_site_loss = avg_val_site_loss
+            best_site_state = site_predictor.state_dict()
+            torch.save(best_site_state, os.path.join(save_dir, "best_site_predictor.pth"))
+            print(f"  Saved best Site Predictor model with validation loss: {best_site_loss:.4f} (Acc: {avg_val_site_acc:.2f}%)")
+    
+    # Load best Site Predictor model
+    site_predictor.load_state_dict(best_site_state)
+    results["site_predictor"] = {"best_val_loss": best_site_loss}
+    
+    # ====================================================================
+    # STAGE 2: Train Combined Model with Frozen Predictors
+    # ====================================================================
+    print(f"\n{'='*40}\nSTAGE 2: Training Combined Model with Frozen Predictors\n{'='*40}")
+    
+    # Create combined model
+    from models import CombinedVAE_Predictors
+    combined_model = CombinedVAE_Predictors(vae_model, age_predictor, site_predictor)
+    combined_model = combined_model.to(device)
+    
+    # Freeze Age and Site Predictor weights
+    for param in age_predictor.parameters():
+        param.requires_grad = False
+    
+    for param in site_predictor.parameters():
+        param.requires_grad = False
+    
+    print("Age and Site Predictor weights are now frozen")
+    
+    # Setup optimizer for VAE only
+    combined_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, combined_model.parameters()), lr=lr)
+    combined_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        combined_optimizer, "min", patience=10, factor=0.5, verbose=True
+    )
+    
+    # Training metrics
+    train_loss_epoch = []
+    val_loss_epoch = []
+    train_recon_loss_epoch = []
+    val_recon_loss_epoch = []
+    train_kl_loss_epoch = []
+    val_kl_loss_epoch = []
+    train_age_loss_epoch = []
+    val_age_loss_epoch = []
+    train_site_loss_epoch = []
+    val_site_loss_epoch = []
+    train_age_mae_epoch = []
+    val_age_mae_epoch = []
+    train_site_acc_epoch = []
+    val_site_acc_epoch = []
+    current_beta_epoch = []
+    current_grl_alpha_epoch = []
+    
+    best_val_metric_value = float("inf")
+    best_combined_state = None
+    best_epoch = 0
+    
+    # Combined training loop
+    for epoch in range(epochs_stage2):
+        # --- GRL Alpha Calculation ---
+        if grl_alpha_epochs > 0 and epoch < grl_alpha_epochs:
+            progress = epoch / grl_alpha_epochs
+            current_grl_alpha = grl_alpha_start + (grl_alpha_end - grl_alpha_start) * progress
+        else:
+            current_grl_alpha = grl_alpha_end
+        current_grl_alpha_epoch.append(current_grl_alpha)
+        
+        # --- KL Beta Calculation ---
+        if kl_annealing_duration > 0 and epoch >= kl_annealing_start_epoch:
+            annealing_epoch = epoch - kl_annealing_start_epoch
+            if annealing_epoch < kl_annealing_duration:
+                progress = annealing_epoch / kl_annealing_duration
+                sigmoid_val = 1 / (1 + np.exp(-10 * (progress - 0.5)))
+                kl_annealing_factor = kl_annealing_start + (1.0 - kl_annealing_start) * sigmoid_val
+            else:
+                kl_annealing_factor = 1.0
+        else:
+            kl_annealing_factor = 0.0 if epoch < kl_annealing_start_epoch else 1.0
+        current_beta = w_kl * kl_annealing_factor
+        current_beta_epoch.append(current_beta)
+        
+        # Training
+        combined_model.train()
+        running_loss = 0.0
+        running_recon_loss = 0.0
+        running_kl_loss = 0.0
+        running_age_loss = 0.0
+        running_site_loss = 0.0
+        running_age_mae_sum = 0.0
+        running_site_correct = 0.0
+        train_items = 0
+        
+        for i, (x, labels) in enumerate(train_data):
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            age_true = labels[:, 0].float().unsqueeze(1).to(device)
+            site_true = labels[:, 1].long().to(device, non_blocking=True)
+            
+            combined_optimizer.zero_grad(set_to_none=True)
+            
+            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha)
+                
+                recon_loss = recon_criterion(x_hat, tract_data)
+                kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                age_loss = age_criterion(age_pred, age_true)
+                site_loss = site_criterion(site_pred, site_true)
+                
+                # In adversarial training with frozen predictors:
+                # 1. Maximize age prediction performance (minimize loss)
+                # 2. Minimize site prediction performance (maximize loss) - this is handled by GRL
+                total_loss = (w_recon * recon_loss +
+                             current_beta * kl_loss +
+                             w_age * age_loss +
+                             w_site * site_loss)
+            
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, combined_model.parameters()), max_norm=max_grad_norm)
+            combined_optimizer.step()
+            
+            train_items += batch_size
+            running_loss += total_loss.item() * batch_size
+            running_recon_loss += recon_loss.item() * batch_size
+            running_kl_loss += kl_loss.item() * batch_size
+            running_age_loss += age_loss.item() * batch_size
+            running_site_loss += site_loss.item() * batch_size
+            running_age_mae_sum += age_loss.item() * batch_size  # L1 loss is MAE
+            _, predicted_sites = torch.max(site_pred.data, 1)
+            running_site_correct += (predicted_sites == site_true).sum().item()
+            
+            if (i + 1) % 10 == 0:
+                print(f"\rEpoch {epoch+1}/{epochs_stage2} | Batch {i+1}/{len(train_data)} | Loss: {total_loss.item():.4f}", end="")
+        
+        # Validation
+        combined_model.eval()
+        running_val_loss = 0.0
+        running_val_recon_loss = 0.0
+        running_val_kl_loss = 0.0
+        running_val_age_loss = 0.0
+        running_val_site_loss = 0.0
+        running_val_age_mae_sum = 0.0
+        running_val_site_correct = 0.0
+        val_items = 0
+        
+        with torch.no_grad():
+            for x, labels in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                age_true = labels[:, 0].float().unsqueeze(1).to(device)
+                site_true = labels[:, 1].long().to(device, non_blocking=True)
+                
+                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                    x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha)
+                    
+                    recon_loss = recon_criterion(x_hat, tract_data)
+                    kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                    age_loss = age_criterion(age_pred, age_true)
+                    site_loss = site_criterion(site_pred, site_true)
+                    
+                    total_loss = (w_recon * recon_loss +
+                                 current_beta * kl_loss +
+                                 w_age * age_loss +
+                                 w_site * site_loss)
+                
+                val_items += batch_size
+                running_val_loss += total_loss.item() * batch_size
+                running_val_recon_loss += recon_loss.item() * batch_size
+                running_val_kl_loss += kl_loss.item() * batch_size
+                running_val_age_loss += age_loss.item() * batch_size
+                running_val_site_loss += site_loss.item() * batch_size
+                running_val_age_mae_sum += age_loss.item() * batch_size
+                _, predicted_sites = torch.max(site_pred.data, 1)
+                running_val_site_correct += (predicted_sites == site_true).sum().item()
+        
+        # Calculate average metrics
+        avg_train_loss = running_loss / train_items
+        avg_train_recon_loss = running_recon_loss / train_items
+        avg_train_kl_loss = running_kl_loss / train_items
+        avg_train_age_loss = running_age_loss / train_items
+        avg_train_site_loss = running_site_loss / train_items
+        avg_train_age_mae = running_age_mae_sum / train_items
+        avg_train_site_acc = (running_site_correct / train_items) * 100
+        
+        avg_val_loss = running_val_loss / val_items
+        avg_val_recon_loss = running_val_recon_loss / val_items
+        avg_val_kl_loss = running_val_kl_loss / val_items
+        avg_val_age_loss = running_val_age_loss / val_items
+        avg_val_site_loss = running_val_site_loss / val_items
+        avg_val_age_mae = running_val_age_mae_sum / val_items
+        avg_val_site_acc = (running_val_site_correct / val_items) * 100
+        
+        # Save metrics
+        train_loss_epoch.append(avg_train_loss)
+        train_recon_loss_epoch.append(avg_train_recon_loss)
+        train_kl_loss_epoch.append(avg_train_kl_loss)
+        train_age_loss_epoch.append(avg_train_age_loss)
+        train_site_loss_epoch.append(avg_train_site_loss)
+        train_age_mae_epoch.append(avg_train_age_mae)
+        train_site_acc_epoch.append(avg_train_site_acc)
+        
+        val_loss_epoch.append(avg_val_loss)
+        val_recon_loss_epoch.append(avg_val_recon_loss)
+        val_kl_loss_epoch.append(avg_val_kl_loss)
+        val_age_loss_epoch.append(avg_val_age_loss)
+        val_site_loss_epoch.append(avg_val_site_loss)
+        val_age_mae_epoch.append(avg_val_age_mae)
+        val_site_acc_epoch.append(avg_val_site_acc)
+        
+        # Create a temporary dict to easily access the metric value by key
+        current_epoch_val_metrics = {
+            "val_loss": avg_val_loss,
+            "val_recon_loss": avg_val_recon_loss,
+            "val_kl_loss": avg_val_kl_loss,
+            "val_age_loss": avg_val_age_loss,
+            "val_site_loss": avg_val_site_loss,
+            "val_age_mae": avg_val_age_mae,
+        }
+        
+        # Get current metric to monitor
+        current_val_metric = current_epoch_val_metrics.get(val_metric_to_monitor, avg_val_loss)
+        
+        # Print progress
+        print(f"\nEpoch {epoch+1}/{epochs_stage2} | Train Loss: {avg_train_loss:.4f} | " +
+              f"Val Loss: {avg_val_loss:.4f} | Val Age MAE: {avg_val_age_mae:.4f} | " +
+              f"Val Site Acc: {avg_val_site_acc:.2f}% | GRL Alpha: {current_grl_alpha:.2f}")
+        
+        # Step scheduler
+        combined_scheduler.step(current_val_metric)
+        
+        # Save best model
+        if current_val_metric < best_val_metric_value:
+            best_val_metric_value = current_val_metric
+            best_combined_state = combined_model.state_dict()
+            best_epoch = epoch
+            
+            # Save model
+            model_path = os.path.join(save_dir, "best_combined_model.pth")
+            torch.save(best_combined_state, model_path)
+            print(f"  Saved best combined model with {val_metric_to_monitor}: {best_val_metric_value:.4f}")
+    
+    # Load best combined model
+    combined_model.load_state_dict(best_combined_state)
+    
+    # --- Return Results Dictionary ---
+    combined_results = {
+        "train_loss_epoch": train_loss_epoch,
+        "val_loss_epoch": val_loss_epoch,
+        "train_recon_loss_epoch": train_recon_loss_epoch,
+        "val_recon_loss_epoch": val_recon_loss_epoch,
+        "train_kl_loss_epoch": train_kl_loss_epoch,
+        "val_kl_loss_epoch": val_kl_loss_epoch,
+        "train_age_loss_epoch": train_age_loss_epoch,
+        "val_age_loss_epoch": val_age_loss_epoch,
+        "train_site_loss_epoch": train_site_loss_epoch,
+        "val_site_loss_epoch": val_site_loss_epoch,
+        "train_age_mae_epoch": train_age_mae_epoch,
+        "val_age_mae_epoch": val_age_mae_epoch,
+        "train_site_acc_epoch": train_site_acc_epoch,
+        "val_site_acc_epoch": val_site_acc_epoch,
+        "current_beta_epoch": current_beta_epoch,
+        "current_grl_alpha_epoch": current_grl_alpha_epoch,
+        f"best_{val_metric_to_monitor}": best_val_metric_value,
+        "best_epoch": best_epoch,
+        "model_path": os.path.join(save_dir, "best_combined_model.pth")
+    }
+    
+    results["combined"] = combined_results
+    
+    print(f"\n{'='*40}\nTraining complete!\n{'='*40}")
+    print(f"Best {val_metric_to_monitor}: {best_val_metric_value:.4f}")
+    
+    return results
