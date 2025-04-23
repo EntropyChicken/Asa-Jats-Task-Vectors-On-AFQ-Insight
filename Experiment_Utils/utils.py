@@ -548,431 +548,6 @@ def grad_reverse(x, alpha=1.0):
     """Helper function to apply the Gradient Reversal Layer."""
     return GradReverse.apply(x, alpha)
 
-def train_variational_autoencoder_age_site(
-    combined_model,
-    train_data,
-    val_data,
-    epochs=500,
-    lr=0.001,
-    device="cuda",
-    max_grad_norm=1.0,
-    w_recon=1.0,
-    w_kl=1.0,
-    w_age=1.0,
-    w_site=1.0,
-    kl_annealing_start_epoch=0,
-    kl_annealing_duration=200,
-    kl_annealing_start=0.0001,
-    grl_alpha_start=0.0,
-    grl_alpha_end=1.0,
-    grl_alpha_epochs=100,
-    save_prefix="best_combined_model",
-    val_metric_to_monitor="val_age_mae"
-):
-    torch.backends.cudnn.benchmark = True
-
-    opt = torch.optim.Adam(combined_model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, "min", patience=10, factor=0.5, verbose=True)
-    scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
-
-    train_loss_epoch = []
-    val_loss_epoch = []
-    train_recon_loss_epoch = []
-    val_recon_loss_epoch = []
-    train_kl_loss_epoch = []
-    val_kl_loss_epoch = []
-    train_age_loss_epoch = []
-    val_age_loss_epoch = []
-    train_site_loss_epoch = []
-    val_site_loss_epoch = []
-    train_age_mae_epoch = []
-    val_age_mae_epoch = []
-    train_site_acc_epoch = []
-    val_site_acc_epoch = []
-    current_beta_epoch = []
-    current_grl_alpha_epoch = []
-    current_lr_epoch = []
-
-    best_val_metric_value = float("inf") 
-    best_model_state = None
-    best_epoch = 0
-    model_filename = f"{save_prefix}.pth"
-
-    # --- Loss Criteria --- (Defined outside the loop)
-    recon_criterion = torch.nn.MSELoss(reduction="mean")
-    age_criterion = torch.nn.L1Loss(reduction="mean") # MAE
-    site_criterion = torch.nn.CrossEntropyLoss(reduction="mean")
-
-    if not hasattr(combined_model, "forward") or len(combined_model.forward.__code__.co_varnames) < 3:
-        print("Warning: combined_model.forward signature should ideally accept (self, x, grl_alpha).")
-
-    print(f"Starting combined training on {device}... Monitoring ", val_metric_to_monitor)
-    num_train_batches = len(train_data)
-    # num_val_batches = len(val_data)
-
-    for epoch in range(epochs):
-        current_lr_epoch.append(opt.param_groups[0]["lr"])
-
-        # --- GRL Alpha Calculation ---
-        if grl_alpha_epochs > 0 and epoch < grl_alpha_epochs:
-            progress = epoch / grl_alpha_epochs
-            current_grl_alpha = grl_alpha_start + (grl_alpha_end - grl_alpha_start) * progress
-        elif epoch >= grl_alpha_epochs:
-            current_grl_alpha = grl_alpha_end
-        else:
-            current_grl_alpha = grl_alpha_end
-        current_grl_alpha_epoch.append(current_grl_alpha)
-
-        # --- KL Beta Calculation ---
-        if kl_annealing_duration > 0 and epoch >= kl_annealing_start_epoch:
-            annealing_epoch = epoch - kl_annealing_start_epoch
-            if annealing_epoch < kl_annealing_duration:
-                progress = annealing_epoch / kl_annealing_duration
-                sigmoid_val = 1 / (1 + np.exp(-10 * (progress - 0.5)))
-                kl_annealing_factor = kl_annealing_start + (1.0 - kl_annealing_start) * sigmoid_val
-            else:
-                kl_annealing_factor = 1.0
-        else:
-            kl_annealing_factor = 0.0 if epoch < kl_annealing_start_epoch else 1.0
-        current_beta = w_kl * kl_annealing_factor
-        current_beta_epoch.append(current_beta)
-
-        current_w_recon = w_recon
-        current_w_age = w_age
-        current_w_site = w_site
-
-        # =================== TRAINING ==================
-        combined_model.train()
-        running_loss = 0.0
-        running_recon_loss = 0.0
-        running_kl_loss = 0.0
-        running_age_loss = 0.0
-        running_site_loss = 0.0
-        running_age_mae_sum = 0.0 
-        running_site_correct = 0.0
-        train_items = 0
-
-        for i, (x, labels) in enumerate(train_data):
-            batch_size = x.size(0)
-            tract_data = x.to(device, non_blocking=True)
-
-
-
-            age_true = labels[:, 0].float().unsqueeze(1).to(device) #for some reason non_blocking=True causes nan values
-            site_true = labels[:, 1].long().to(device, non_blocking=True) # Get remapped site index as Long
-
-            if torch.isnan(age_true).any(): print(f"train NaN found in age_true! Batch indices: {torch.where(torch.isnan(age_true))[0].tolist()}")
-
-            opt.zero_grad(set_to_none=True)
-
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                model_out = combined_model(tract_data, grl_alpha=current_grl_alpha)
-                x_hat, mean, logvar, age_pred, site_pred = model_out
-
-                recon_loss = recon_criterion(x_hat, tract_data)
-                kl_loss_unreduced = kl_divergence_loss(mean, logvar)
-                kl_loss = kl_loss_unreduced / batch_size 
-                age_loss = age_criterion(age_pred, age_true)
-                site_loss = site_criterion(site_pred, site_true)
-
-                if torch.isnan(recon_loss): print(f"NaN found in recon_loss!")
-                if torch.isnan(kl_loss): print(f"NaN found in kl_loss! mean={mean.mean().item():.2f}, logvar={logvar.mean().item():.2f}")
-
-                if torch.isnan(age_loss): print(f"NaN found in age_loss! age_pred mean: {age_pred.mean().item():.2f}, age_true mean: {age_true.nanmean().item():.2f}, any age_true NaN: {torch.isnan(age_true).any()}")
-                if torch.isnan(site_loss): print(f"NaN found in site_loss!")
-                # -------------------------------------------
-
-                total_loss = (current_w_recon * recon_loss +
-                              current_beta * kl_loss +
-                              current_w_age * age_loss +
-                              current_w_site * site_loss)
-
-                # --- DEBUG: Check total loss ---
-                if torch.isnan(total_loss): print("train NaN found in total_loss BEFORE backward!")
-                # ---------------------------------
-
-            scaler.scale(total_loss).backward()
-            scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(combined_model.parameters(), max_norm=max_grad_norm)
-            scaler.step(opt)
-            scaler.update()
-
-            train_items += batch_size
-            running_loss += total_loss.item() * batch_size
-            running_recon_loss += recon_loss.item() * batch_size
-            running_kl_loss += kl_loss.item() * batch_size
-            running_age_loss += age_loss.item() * batch_size
-            running_site_loss += site_loss.item() * batch_size
-            running_age_mae_sum += age_loss.item() * batch_size # L1 loss is MAE
-            _, predicted_sites = torch.max(site_pred.data, 1)
-            # Use correct target variable
-            running_site_correct += (predicted_sites == site_true).sum().item()
-
-            if (i + 1) % 10 == 0 or (i + 1) == num_train_batches:
-                print(f"\rEpoch {epoch+1}/{epochs} | Batch {i+1}/{num_train_batches} | Train Loss: {total_loss.item():.4f}", end="")
-
-        # Calculate average training metrics for the epoch
-        avg_train_loss = running_loss / train_items
-        avg_train_recon_loss = running_recon_loss / train_items
-        avg_train_kl_loss = running_kl_loss / train_items
-        avg_train_age_loss = running_age_loss / train_items
-        avg_train_site_loss = running_site_loss / train_items
-        avg_train_age_mae = running_age_mae_sum / train_items
-        avg_train_site_acc = (running_site_correct / train_items) * 100
-
-        # Append training metrics to lists
-        train_loss_epoch.append(avg_train_loss)
-        train_recon_loss_epoch.append(avg_train_recon_loss)
-        train_kl_loss_epoch.append(avg_train_kl_loss)
-        train_age_loss_epoch.append(avg_train_age_loss)
-        train_site_loss_epoch.append(avg_train_site_loss)
-        train_age_mae_epoch.append(avg_train_age_mae)
-        train_site_acc_epoch.append(avg_train_site_acc)
-
-        # =================== VALIDATION ==================
-        combined_model.eval()
-        running_val_loss = 0.0
-        running_val_recon_loss = 0.0
-        running_val_kl_loss = 0.0
-        running_val_age_loss = 0.0
-        running_val_site_loss = 0.0
-        running_val_age_mae_sum = 0.0
-        running_val_site_correct = 0.0
-        val_items = 0
-
-        with torch.no_grad():
-            for x, labels in val_data:
-                batch_size = x.size(0)
-                tract_data = x.to(device, non_blocking=True)
-                # Revert to correct batch-wise slicing
-                age_true = labels[:, 0].float().unsqueeze(1).to(device)
-                site_true = labels[:, 1].long().to(device, non_blocking=True)
-
-                # --- DEBUG: Check for NaNs in true labels ---
-                if torch.isnan(age_true).any(): print(f"NaN found in val age_true! Batch indices: {torch.where(torch.isnan(age_true))[0].tolist()}")
-                # ---------------------------------------------
-
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                    # Removed print
-                    model_out = combined_model(tract_data, grl_alpha=current_grl_alpha)
-                    x_hat, mean, logvar, age_pred, site_pred = model_out
-                    # Removed print
-                    # --- DEBUG: Check for NaNs in model outputs ---
-
-                    recon_loss = recon_criterion(x_hat, tract_data)
-                    kl_loss = kl_divergence_loss(mean, logvar) / batch_size
-
-                    age_loss = age_criterion(age_pred, age_true)
-                    site_loss = site_criterion(site_pred, site_true)
-
-                    # --- DEBUG: Check individual loss values ---
-                    if torch.isnan(recon_loss): print(f"NaN found in recon_loss!")
-                    if torch.isnan(kl_loss): print(f"NaN found in kl_loss! mean={mean.mean().item():.2f}, logvar={logvar.mean().item():.2f}")
-                    # Use correct target variable in debug message
-                    if torch.isnan(age_loss): print(f"NaN found in age_loss! age_pred mean: {age_pred.mean().item():.2f}, age_true mean: {age_true.nanmean().item():.2f}, any age_true NaN: {torch.isnan(age_true).any()}")
-                    if torch.isnan(site_loss): print(f"NaN found in site_loss!")
-                    # -------------------------------------------
-
-                    total_loss = (current_w_recon * recon_loss +
-                                  current_beta * kl_loss +
-                                  current_w_age * age_loss +
-                                  current_w_site * site_loss)
-
-                    # --- DEBUG: Check total loss ---
-                    if torch.isnan(total_loss): print("NaN found in total_loss BEFORE backward!")
-                    # ---------------------------------
-
-                val_items += batch_size
-                running_val_loss += total_loss.item() * batch_size
-                running_val_recon_loss += recon_loss.item() * batch_size
-                running_val_kl_loss += kl_loss.item() * batch_size
-                running_val_age_loss += age_loss.item() * batch_size
-                running_val_site_loss += site_loss.item() * batch_size
-                running_val_age_mae_sum += age_loss.item() * batch_size
-                _, predicted_sites = torch.max(site_pred.data, 1)
-                # Use correct target variable
-                running_val_site_correct += (predicted_sites == site_true).sum().item()
-
-        # Calculate average validation metrics
-        avg_val_loss = running_val_loss / val_items
-        avg_val_recon_loss = running_val_recon_loss / val_items
-        avg_val_kl_loss = running_val_kl_loss / val_items
-        avg_val_age_loss = running_val_age_loss / val_items
-        avg_val_site_loss = running_val_site_loss / val_items
-        avg_val_age_mae = running_val_age_mae_sum / val_items
-        avg_val_site_acc = (running_val_site_correct / val_items) * 100
-
-        # Append validation metrics to lists
-        val_loss_epoch.append(avg_val_loss)
-        val_recon_loss_epoch.append(avg_val_recon_loss)
-        val_kl_loss_epoch.append(avg_val_kl_loss)
-        val_age_loss_epoch.append(avg_val_age_loss)
-        val_site_loss_epoch.append(avg_val_site_loss)
-        val_age_mae_epoch.append(avg_val_age_mae)
-        val_site_acc_epoch.append(avg_val_site_acc)
-
-        # --- Scheduler Step --- (Step based on the chosen metric)
-        # Create a temporary dict to easily access the metric value by key
-        current_epoch_val_metrics = {
-            "val_loss": avg_val_loss,
-            "val_recon_loss": avg_val_recon_loss,
-            "val_kl_loss": avg_val_kl_loss,
-            "val_age_loss": avg_val_age_loss,
-            "val_site_loss": avg_val_site_loss,
-            "val_age_mae": avg_val_age_mae,
-            "val_site_acc": avg_val_site_acc # Accuracy isn't usually used for ReduceLROnPlateau min mode
-        }
-        metric_to_schedule = current_epoch_val_metrics.get(val_metric_to_monitor)
-        if metric_to_schedule is None:
-            print(f"Warning: Metric '{val_metric_to_monitor}' not found for scheduler. Defaulting to 'val_loss'.")
-            metric_to_schedule = avg_val_loss
-        scheduler.step(metric_to_schedule)
-
-        # --- Checkpoint Best Model (similar to train_vae) ---
-        current_val_metric = metric_to_schedule # Use the same metric value as scheduler
-        if current_val_metric < best_val_metric_value:
-            best_val_metric_value = current_val_metric
-            best_epoch = epoch + 1
-            best_model_state = combined_model.state_dict().copy() # Store state dict
-            print(f"\nEpoch {epoch+1}: New best model found! {val_metric_to_monitor}: {best_val_metric_value:.4f}. State stored.")
-
-        # --- Print Epoch Summary --- (Using average metrics)
-        print(f"\nEpoch {epoch+1} Summary:")
-        print(f"  LR: {current_lr_epoch[-1]:.1e} | Beta: {current_beta:.4f} | GRL Alpha: {current_grl_alpha:.4f}")
-        print(f"  Loss (Train/Val): {avg_train_loss:.4f} / {avg_val_loss:.4f}")
-        print(f"  Recon Loss (Train/Val): {avg_train_recon_loss:.4f} / {avg_val_recon_loss:.4f}")
-        print(f"  KL Loss (Train/Val): {avg_train_kl_loss:.6f} / {avg_val_kl_loss:.6f}")
-        print(f"  Age MAE (Train/Val): {avg_train_age_mae:.4f} / {avg_val_age_mae:.4f}")
-        print(f"  Site Acc (Train/Val): {avg_train_site_acc:.2f}% / {avg_val_site_acc:.2f}%")
-        print("-" * 60)
-
-    # --- Save Best Model State After Loop --- (similar to train_vae)
-    if best_model_state is not None:
-        print(f"\nTraining complete. Saving best model from epoch {best_epoch} ({val_metric_to_monitor}: {best_val_metric_value:.4f}) to {model_filename}")
-        torch.save(best_model_state, model_filename)
-    else:
-        print("\nTraining complete. No best model state was saved (no improvement found or error occurred).")
-        model_filename = None # Indicate no model was saved
-
-    # --- Return Results Dictionary (similar to train_vae) ---
-    results = {
-        "train_loss_epoch": train_loss_epoch,
-        "val_loss_epoch": val_loss_epoch,
-        "train_recon_loss_epoch": train_recon_loss_epoch,
-        "val_recon_loss_epoch": val_recon_loss_epoch,
-        "train_kl_loss_epoch": train_kl_loss_epoch,
-        "val_kl_loss_epoch": val_kl_loss_epoch,
-        "train_age_loss_epoch": train_age_loss_epoch,
-        "val_age_loss_epoch": val_age_loss_epoch,
-        "train_site_loss_epoch": train_site_loss_epoch,
-        "val_site_loss_epoch": val_site_loss_epoch,
-        "train_age_mae_epoch": train_age_mae_epoch,
-        "val_age_mae_epoch": val_age_mae_epoch,
-        "train_site_acc_epoch": train_site_acc_epoch,
-        "val_site_acc_epoch": val_site_acc_epoch,
-        "current_beta_epoch": current_beta_epoch,
-        "current_grl_alpha_epoch": current_grl_alpha_epoch,
-        "current_lr_epoch": current_lr_epoch,
-        f"best_{val_metric_to_monitor}": best_val_metric_value,
-        "best_epoch": best_epoch,
-        "model_path": model_filename
-    }
-
-    return results
-
-def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_site_id', age_col_name='age'):
-    # 1. Prepare FA-only dataset first (reuse existing logic)
-    # Assuming target_labels="dki_fa" is appropriate for selecting FA features
-    torch_dataset_fa, train_loader_fa, test_loader_fa, val_loader_fa = prep_fa_dataset(
-        dataset, target_labels="dki_fa", batch_size=batch_size
-    )
-
-    # 2. Get necessary info for remapping from the original dataset
-    try:
-        original_target_cols = dataset.target_cols
-        age_idx = original_target_cols.index(age_col_name)
-        site_idx = original_target_cols.index(site_col_name)
-        print(f"Remapping prep: Using age index {age_idx}, site index {site_idx} from {original_target_cols}")
-    except (AttributeError, ValueError) as e:
-        print(f"Error finding columns '{age_col_name}' or '{site_col_name}' in dataset.target_cols: {e}")
-        raise ValueError("Could not find required columns for remapping.") from e
-
-    # Define the site map {original_id: new_id}
-    site_map = {0.0: 0.0, 1.0: 1.0, 3.0: 2.0, 4.0: 3.0}
-    print(f"Using site map: {site_map}")
-
-    # 3. Define the modified AllTractsDataset with remapping
-    class AllTractsRemappedDataset(Dataset):
-        def __init__(self, original_fa_dataset, age_idx, site_idx, site_map):
-            self.original_fa_dataset = original_fa_dataset # This is the FA-only TensorDataset
-            self.sample_count = len(original_fa_dataset)
-            # Assuming original_fa_dataset[0][0] gives fa_tract data [num_tracts, num_nodes]
-            sample_x, _ = original_fa_dataset[0]
-            self.tract_count = sample_x.shape[0]
-            self.age_idx = age_idx
-            self.site_idx = site_idx
-            self.site_map = site_map
-            if not isinstance(original_fa_dataset, torch.utils.data.Dataset):
-                 raise TypeError("original_fa_dataset must be an instance of torch.utils.data.Dataset")
-
-        def __len__(self):
-            # Each sample yields tract_count individual items
-            return self.sample_count * self.tract_count
-
-        def __getitem__(self, idx):
-            # Map flattened index back to original sample and tract
-            sample_idx = idx // self.tract_count
-            tract_idx = idx % self.tract_count
-
-            # Get data from the original FA-only dataset
-            # base_dataset yields (fa_data, original_y)
-            fa_data, original_y = self.original_fa_dataset[sample_idx]
-
-            # Extract the specific tract profile
-            # Ensure it has shape [1, num_nodes] for Conv1D
-            tract_data = fa_data[tract_idx : tract_idx + 1, :].clone()
-
-            # Extract age and original site from the original y tensor
-            age = original_y[self.age_idx].item()
-            original_site = original_y[self.site_idx].item()
-
-            # Remap the site ID
-            remapped_site = self.site_map.get(original_site, -1.0) # Default to -1.0 if not found
-            if remapped_site == -1.0:
-                 print(f"Warning: Site value {original_site} at original index {sample_idx} not in map!")
-
-            # Create the new label tensor [age, remapped_site]
-            new_labels = torch.tensor([age, remapped_site], dtype=torch.float32)
-
-            return tract_data, new_labels
-
-    # 4. Create instances of the new Dataset using the base FA datasets
-    print("Creating remapped datasets...")
-    all_tracts_train_dataset = AllTractsRemappedDataset(train_loader_fa.dataset, age_idx, site_idx, site_map)
-    all_tracts_test_dataset = AllTractsRemappedDataset(test_loader_fa.dataset, age_idx, site_idx, site_map)
-    all_tracts_val_dataset = AllTractsRemappedDataset(val_loader_fa.dataset, age_idx, site_idx, site_map)
-
-    # 5. Create the final DataLoaders
-    print("Creating final DataLoaders...")
-    # Use torch.utils.data.DataLoader explicitly
-    all_tracts_train_loader = torch.utils.data.DataLoader(
-        all_tracts_train_dataset, batch_size=batch_size, shuffle=True
-    )
-    all_tracts_test_loader = torch.utils.data.DataLoader(
-        all_tracts_test_dataset, batch_size=batch_size, shuffle=False
-    )
-    all_tracts_val_loader = torch.utils.data.DataLoader(
-        all_tracts_val_dataset, batch_size=batch_size, shuffle=False
-    )
-
-    print("prep_fa_flattened_remapped_data complete.")
-    return (
-        torch_dataset_fa, # Return original subsetted FA dataset for reference
-        all_tracts_train_loader,
-        all_tracts_test_loader,
-        all_tracts_val_loader,
-    )
-
 def train_vae_age_site_staged(
     vae_model,
     age_predictor,
@@ -1027,6 +602,16 @@ def train_vae_age_site_staged(
     best_vae_loss = float("inf")
     best_vae_state = None
     
+    # Initialize metrics tracking for VAE
+    vae_train_loss_epoch = []
+    vae_val_loss_epoch = []
+    vae_train_recon_loss_epoch = []
+    vae_val_recon_loss_epoch = []
+    vae_train_kl_loss_epoch = []
+    vae_val_kl_loss_epoch = []
+    vae_current_beta_epoch = []
+    vae_current_lr_epoch = []
+    
     # Training loop for VAE
     for epoch in range(epochs_stage1):
         # --- KL Beta Calculation ---
@@ -1041,6 +626,8 @@ def train_vae_age_site_staged(
         else:
             kl_annealing_factor = 0.0 if epoch < kl_annealing_start_epoch else 1.0
         current_beta = w_kl * kl_annealing_factor
+        vae_current_beta_epoch.append(current_beta)
+        vae_current_lr_epoch.append(vae_optimizer.param_groups[0]["lr"])
         
         # Training
         vae_model.train()
@@ -1108,6 +695,14 @@ def train_vae_age_site_staged(
         avg_val_kl_loss = val_kl_loss / val_items
         avg_val_total_loss = val_total_loss / val_items
         
+        # Store metrics
+        vae_train_loss_epoch.append(avg_train_total_loss)
+        vae_val_loss_epoch.append(avg_val_total_loss)
+        vae_train_recon_loss_epoch.append(avg_train_recon_loss)
+        vae_val_recon_loss_epoch.append(avg_val_recon_loss)
+        vae_train_kl_loss_epoch.append(avg_train_kl_loss)
+        vae_val_kl_loss_epoch.append(avg_val_kl_loss)
+        
         print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train Loss: {avg_train_total_loss:.4f} | Val Loss: {avg_val_total_loss:.4f} | Val Recon: {avg_val_recon_loss:.4f} | Val KL: {avg_val_kl_loss:.4f}")
         
         vae_scheduler.step(avg_val_total_loss)
@@ -1121,7 +716,17 @@ def train_vae_age_site_staged(
     
     # Load best VAE model
     vae_model.load_state_dict(best_vae_state)
-    results["vae"] = {"best_val_loss": best_vae_loss}
+    results["vae"] = {
+        "best_val_loss": best_vae_loss,
+        "train_loss_epoch": vae_train_loss_epoch,
+        "val_loss_epoch": vae_val_loss_epoch,
+        "train_recon_loss_epoch": vae_train_recon_loss_epoch,
+        "val_recon_loss_epoch": vae_val_recon_loss_epoch,
+        "train_kl_loss_epoch": vae_train_kl_loss_epoch,
+        "val_kl_loss_epoch": vae_val_kl_loss_epoch,
+        "current_beta_epoch": vae_current_beta_epoch,
+        "current_lr_epoch": vae_current_lr_epoch
+    }
     
     # --- STEP 2: Train Age Predictor ---
     print(f"\n{'-'*40}\nTraining Age Predictor...\n{'-'*40}")
@@ -1151,8 +756,15 @@ def train_vae_age_site_staged(
     best_age_mae = float("inf")
     best_age_state = None
     
+    # Initialize metrics tracking for Age Predictor
+    age_train_loss_epoch = []
+    age_val_loss_epoch = []
+    age_current_lr_epoch = []
+    
     # Training loop for Age Predictor
     for epoch in range(epochs_stage1):
+        age_current_lr_epoch.append(age_optimizer.param_groups[0]["lr"])
+        
         # Training
         age_predictor.train()
         train_age_loss = 0.0
@@ -1200,6 +812,10 @@ def train_vae_age_site_staged(
         avg_train_age_loss = train_age_loss / train_items
         avg_val_age_loss = val_age_loss / val_items
         
+        # Store metrics
+        age_train_loss_epoch.append(avg_train_age_loss)
+        age_val_loss_epoch.append(avg_val_age_loss)
+        
         print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train MAE: {avg_train_age_loss:.4f} | Val MAE: {avg_val_age_loss:.4f}")
         
         age_scheduler.step(avg_val_age_loss)
@@ -1213,7 +829,12 @@ def train_vae_age_site_staged(
     
     # Load best Age Predictor model
     age_predictor.load_state_dict(best_age_state)
-    results["age_predictor"] = {"best_val_mae": best_age_mae}
+    results["age_predictor"] = {
+        "best_val_mae": best_age_mae,
+        "train_loss_epoch": age_train_loss_epoch,
+        "val_loss_epoch": age_val_loss_epoch,
+        "current_lr_epoch": age_current_lr_epoch
+    }
     
     # --- STEP 3: Train Site Predictor ---
     print(f"\n{'-'*40}\nTraining Site Predictor...\n{'-'*40}")
@@ -1236,8 +857,17 @@ def train_vae_age_site_staged(
     best_site_loss = float("inf")
     best_site_state = None
     
+    # Initialize metrics tracking for Site Predictor
+    site_train_loss_epoch = []
+    site_val_loss_epoch = []
+    site_train_acc_epoch = []
+    site_val_acc_epoch = []
+    site_current_lr_epoch = []
+    
     # Training loop for Site Predictor
     for epoch in range(epochs_stage1):
+        site_current_lr_epoch.append(site_optimizer.param_groups[0]["lr"])
+        
         # Training
         site_predictor.train()
         train_site_loss = 0.0
@@ -1293,6 +923,12 @@ def train_vae_age_site_staged(
         avg_val_site_loss = val_site_loss / val_items
         avg_val_site_acc = (val_site_correct / val_items) * 100
         
+        # Store metrics
+        site_train_loss_epoch.append(avg_train_site_loss)
+        site_val_loss_epoch.append(avg_val_site_loss)
+        site_train_acc_epoch.append(avg_train_site_acc)
+        site_val_acc_epoch.append(avg_val_site_acc)
+        
         print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train Loss: {avg_train_site_loss:.4f} | Train Acc: {avg_train_site_acc:.2f}% | Val Loss: {avg_val_site_loss:.4f} | Val Acc: {avg_val_site_acc:.2f}%")
         
         site_scheduler.step(avg_val_site_loss)
@@ -1306,7 +942,14 @@ def train_vae_age_site_staged(
     
     # Load best Site Predictor model
     site_predictor.load_state_dict(best_site_state)
-    results["site_predictor"] = {"best_val_loss": best_site_loss}
+    results["site_predictor"] = {
+        "best_val_loss": best_site_loss,
+        "train_loss_epoch": site_train_loss_epoch,
+        "val_loss_epoch": site_val_loss_epoch,
+        "train_acc_epoch": site_train_acc_epoch,
+        "val_acc_epoch": site_val_acc_epoch,
+        "current_lr_epoch": site_current_lr_epoch
+    }
     
     # ====================================================================
     # STAGE 2: Train Combined Model with Frozen Predictors
@@ -1349,6 +992,7 @@ def train_vae_age_site_staged(
     val_site_acc_epoch = []
     current_beta_epoch = []
     current_grl_alpha_epoch = []
+    current_lr_epoch = []
     
     best_val_metric_value = float("inf")
     best_combined_state = None
@@ -1356,6 +1000,8 @@ def train_vae_age_site_staged(
     
     # Combined training loop
     for epoch in range(epochs_stage2):
+        current_lr_epoch.append(combined_optimizer.param_groups[0]["lr"])
+        
         # --- GRL Alpha Calculation ---
         if grl_alpha_epochs > 0 and epoch < grl_alpha_epochs:
             progress = epoch / grl_alpha_epochs
@@ -1558,6 +1204,7 @@ def train_vae_age_site_staged(
         "val_site_acc_epoch": val_site_acc_epoch,
         "current_beta_epoch": current_beta_epoch,
         "current_grl_alpha_epoch": current_grl_alpha_epoch,
+        "current_lr_epoch": current_lr_epoch,
         f"best_{val_metric_to_monitor}": best_val_metric_value,
         "best_epoch": best_epoch,
         "model_path": os.path.join(save_dir, "best_combined_model.pth")
