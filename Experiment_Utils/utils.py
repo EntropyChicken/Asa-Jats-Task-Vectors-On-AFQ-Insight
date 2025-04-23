@@ -1357,7 +1357,6 @@ def train_vae_age_site_staged(
     
     print("Age and Site Predictor weights are now frozen")
     
-    # Setup optimizer for VAE only
     combined_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, combined_model.parameters()), lr=lr)
     combined_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         combined_optimizer, "min", patience=10, factor=0.5, verbose=True
