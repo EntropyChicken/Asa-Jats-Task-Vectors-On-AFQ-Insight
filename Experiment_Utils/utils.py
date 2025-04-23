@@ -997,36 +997,6 @@ def train_vae_age_site_staged(
     save_dir="staged_models",
     val_metric_to_monitor="val_age_mae"
 ):
-    """
-    Multi-stage training process:
-    1. Train VAE, age predictor, and site predictor separately
-    2. Freeze age and site predictors
-    3. Train combined model where VAE tries to fool site predictor while maintaining age prediction
-    
-    Args:
-        vae_model: The variational autoencoder model
-        age_predictor: The age prediction model
-        site_predictor: The site prediction model
-        train_data: Training data loader
-        val_data: Validation data loader
-        epochs_stage1: Number of epochs for independent training
-        epochs_stage2: Number of epochs for adversarial training
-        lr: Learning rate
-        device: Device to train on ('cuda' or 'cpu')
-        max_grad_norm: Maximum gradient norm for clipping
-        w_recon: Weight for reconstruction loss
-        w_kl: Weight for KL divergence loss
-        w_age: Weight for age prediction loss
-        w_site: Weight for site prediction loss
-        kl_annealing_start_epoch: Epoch to start KL annealing
-        kl_annealing_duration: Duration of KL annealing
-        kl_annealing_start: Starting value for KL annealing
-        grl_alpha_start: Starting value for gradient reversal layer
-        grl_alpha_end: Ending value for gradient reversal layer
-        grl_alpha_epochs: Number of epochs to reach max gradient reversal
-        save_dir: Directory to save models
-        val_metric_to_monitor: Validation metric to monitor for early stopping
-    """
     import os
     os.makedirs(save_dir, exist_ok=True)
     
