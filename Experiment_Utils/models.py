@@ -185,36 +185,40 @@ class AgePredictorCNN(nn.Module):
         return age_pred
 
 class SitePredictorCNN(nn.Module):
-    def __init__(self, num_sites=4, input_channels=1, sequence_length=50, dropout=0.3):
+    def __init__(self, num_sites=4, input_channels=1, sequence_length=50, dropout=0.2):
         super().__init__()
-        # Fewer initial filters and larger dropout
-        self.conv1 = nn.Conv1d(input_channels, 16, kernel_size=5, stride=2, padding=2)
-        self.bn1 = nn.BatchNorm1d(16)
-        self.conv2 = nn.Conv1d(16, 32, kernel_size=3, stride=2, padding=1)
-        self.bn2 = nn.BatchNorm1d(32)
-        # Remove the third convolutional layer to make this network simpler
-        
+        self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=5, stride=2, padding=2)
+        self.bn1 = nn.BatchNorm1d(32)
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=3, stride=2, padding=1)
+        self.bn2 = nn.BatchNorm1d(64)
+        self.conv3 = nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1)
+        self.bn3 = nn.BatchNorm1d(128)
+
         self.flatten = nn.Flatten()
-        self.dropout = nn.Dropout(dropout)  # Higher dropout
+        self.dropout = nn.Dropout(dropout)
         self.relu = nn.ReLU()
-        
-        dummy_input = torch.randn(1, input_channels, sequence_length)
-        conv_output_shape = self._get_conv_output_shape(dummy_input)
-        flat_size = conv_output_shape[1] * conv_output_shape[2]
-        
-        self.fc1 = nn.Linear(flat_size, 32)  # Smaller hidden layer
-        self.fc_out = nn.Linear(32, num_sites)
-        
+
+        _dummy_input = torch.randn(1, input_channels, sequence_length)
+        _conv_output_shape = self._get_conv_output_shape(_dummy_input)
+        flat_size = _conv_output_shape[1] * _conv_output_shape[2]
+
+        self.fc1 = nn.Linear(flat_size, 64)
+        self.fc_out = nn.Linear(64, num_sites)
+
     def _get_conv_output_shape(self, x):
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.relu(self.bn2(self.conv2(x)))
+        x = self.relu(self.bn3(self.conv3(x)))
         return x.shape
-        
+
     def forward(self, x):
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.dropout(x)
         x = self.relu(self.bn2(self.conv2(x)))
         x = self.dropout(x)
+        x = self.relu(self.bn3(self.conv3(x)))
+        x = self.dropout(x)
+
         x = self.flatten(x)
         x = self.relu(self.fc1(x))
         x = self.dropout(x)
@@ -224,19 +228,13 @@ class SitePredictorCNN(nn.Module):
 
 # --- Combined Model ---
 
-# Ensure grad_reverse is accessible here.
-# If utils.py is not guaranteed to be imported where this models file is used,
-# you might need to copy the GradReverse class and grad_reverse function here.
-# For now, assume it will be available from an import.
 try:
     from .utils import grad_reverse
 except ImportError:
-    # Fallback if relative import fails (e.g., script run directly)
     try:
-        from utils import grad_reverse # Assuming utils.py is in PYTHONPATH
+        from utils import grad_reverse 
     except ImportError:
         print("Warning: grad_reverse function not found. Define or import it for CombinedVAE_Predictors.")
-        # Define a dummy grad_reverse if not found, so the class can be defined
         def grad_reverse(x, alpha=1.0):
             print("Warning: Using dummy grad_reverse!")
             return x
