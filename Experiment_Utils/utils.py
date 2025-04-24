@@ -348,7 +348,7 @@ def train_variational_autoencoder_age_site(
  
      return results
  
- def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_site_id', age_col_name='age'):
+def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_site_id', age_col_name='age'):
      # 1. Prepare FA-only dataset first (reuse existing logic)
      # Assuming target_labels="dki_fa" is appropriate for selecting FA features
      torch_dataset_fa, train_loader_fa, test_loader_fa, val_loader_fa = prep_fa_dataset(
@@ -1014,7 +1014,7 @@ def train_vae_age_site_staged(
     results = {}
     
     # ====================================================================
-    # STAGE 1: Train each model independently
+    # STAGE 1: Train each model independently on raw data
     # ====================================================================
     print(f"\n{'='*40}\nSTAGE 1: Training models independently\n{'='*40}")
     
@@ -1152,27 +1152,8 @@ def train_vae_age_site_staged(
         "current_lr_epoch": vae_current_lr_epoch
     }
     
-    # --- STEP 2: Train Age Predictor ---
-    print(f"\n{'-'*40}\nTraining Age Predictor...\n{'-'*40}")
-    
-    # First, generate reconstructions from VAE (frozen)
-    print("Generating reconstructions from trained VAE...")
-    vae_model.eval()
-    age_train_data = []
-    age_val_data = []
-    
-    with torch.no_grad():
-        for x, labels in train_data:
-            tract_data = x.to(device, non_blocking=True)
-            age_labels = labels[:, 0].float().unsqueeze(1)
-            x_hat, _, _ = vae_model(tract_data)
-            age_train_data.append((x_hat.cpu(), age_labels))
-        
-        for x, labels in val_data:
-            tract_data = x.to(device, non_blocking=True)
-            age_labels = labels[:, 0].float().unsqueeze(1)
-            x_hat, _, _ = vae_model(tract_data)
-            age_val_data.append((x_hat.cpu(), age_labels))
+    # --- STEP 2: Train Age Predictor on raw data ---
+    print(f"\n{'-'*40}\nTraining Age Predictor on raw data...\n{'-'*40}")
     
     age_optimizer = torch.optim.Adam(age_predictor.parameters(), lr=lr)
     age_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(age_optimizer, "min", patience=10, factor=0.5, verbose=True)
@@ -1185,7 +1166,7 @@ def train_vae_age_site_staged(
     age_val_loss_epoch = []
     age_current_lr_epoch = []
     
-    # Training loop for Age Predictor
+    # Training loop for Age Predictor on raw data
     for epoch in range(epochs_stage1):
         age_current_lr_epoch.append(age_optimizer.param_groups[0]["lr"])
         
@@ -1194,15 +1175,15 @@ def train_vae_age_site_staged(
         train_age_loss = 0.0
         train_items = 0
         
-        for i, (x_hat, age_true) in enumerate(age_train_data):
-            batch_size = x_hat.size(0)
-            x_hat = x_hat.to(device, non_blocking=True)
-            age_true = age_true.to(device, non_blocking=True)
+        for i, (x, labels) in enumerate(train_data):
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            age_true = labels[:, 0].float().unsqueeze(1).to(device)
             
             age_optimizer.zero_grad(set_to_none=True)
             
             with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                age_pred = age_predictor(x_hat)
+                age_pred = age_predictor(tract_data)
                 age_loss = age_criterion(age_pred, age_true)
             
             age_loss.backward()
@@ -1213,7 +1194,7 @@ def train_vae_age_site_staged(
             train_age_loss += age_loss.item() * batch_size
             
             if (i + 1) % 10 == 0:
-                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(age_train_data)} | MAE: {age_loss.item():.4f}", end="")
+                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(train_data)} | MAE: {age_loss.item():.4f}", end="")
         
         # Validation
         age_predictor.eval()
@@ -1221,13 +1202,13 @@ def train_vae_age_site_staged(
         val_items = 0
         
         with torch.no_grad():
-            for x_hat, age_true in age_val_data:
-                batch_size = x_hat.size(0)
-                x_hat = x_hat.to(device, non_blocking=True)
-                age_true = age_true.to(device, non_blocking=True)
+            for x, labels in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                age_true = labels[:, 0].float().unsqueeze(1).to(device)
                 
                 with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                    age_pred = age_predictor(x_hat)
+                    age_pred = age_predictor(tract_data)
                     age_loss = age_criterion(age_pred, age_true)
                 
                 val_items += batch_size
@@ -1260,20 +1241,8 @@ def train_vae_age_site_staged(
         "current_lr_epoch": age_current_lr_epoch
     }
     
-    # --- STEP 3: Train Site Predictor ---
-    print(f"\n{'-'*40}\nTraining Site Predictor...\n{'-'*40}")
-    
-    # Using the same reconstructions from VAE
-    site_train_data = []
-    site_val_data = []
-    
-    for x_hat, labels in age_train_data:
-        site_labels = labels[:, 1].long()
-        site_train_data.append((x_hat, site_labels))
-    
-    for x_hat, labels in age_val_data:
-        site_labels = labels[:, 1].long()
-        site_val_data.append((x_hat, site_labels))
+    # --- STEP 3: Train Site Predictor on raw data ---
+    print(f"\n{'-'*40}\nTraining Site Predictor on raw data...\n{'-'*40}")
     
     site_optimizer = torch.optim.Adam(site_predictor.parameters(), lr=lr)
     site_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(site_optimizer, "min", patience=10, factor=0.5, verbose=True)
@@ -1288,7 +1257,7 @@ def train_vae_age_site_staged(
     site_val_acc_epoch = []
     site_current_lr_epoch = []
     
-    # Training loop for Site Predictor
+    # Training loop for Site Predictor on raw data
     for epoch in range(epochs_stage1):
         site_current_lr_epoch.append(site_optimizer.param_groups[0]["lr"])
         
@@ -1298,15 +1267,15 @@ def train_vae_age_site_staged(
         train_site_correct = 0
         train_items = 0
         
-        for i, (x_hat, site_true) in enumerate(site_train_data):
-            batch_size = x_hat.size(0)
-            x_hat = x_hat.to(device, non_blocking=True)
-            site_true = site_true.to(device, non_blocking=True)
+        for i, (x, labels) in enumerate(train_data):
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            site_true = labels[:, 1].long().to(device, non_blocking=True)
             
             site_optimizer.zero_grad(set_to_none=True)
             
             with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                site_pred = site_predictor(x_hat)
+                site_pred = site_predictor(tract_data)
                 site_loss = site_criterion(site_pred, site_true)
             
             site_loss.backward()
@@ -1319,7 +1288,7 @@ def train_vae_age_site_staged(
             train_site_correct += (predicted_sites == site_true).sum().item()
             
             if (i + 1) % 10 == 0:
-                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(site_train_data)} | Loss: {site_loss.item():.4f}", end="")
+                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(train_data)} | Loss: {site_loss.item():.4f}", end="")
         
         # Validation
         site_predictor.eval()
@@ -1328,13 +1297,13 @@ def train_vae_age_site_staged(
         val_items = 0
         
         with torch.no_grad():
-            for x_hat, site_true in site_val_data:
-                batch_size = x_hat.size(0)
-                x_hat = x_hat.to(device, non_blocking=True)
-                site_true = site_true.to(device, non_blocking=True)
+            for x, labels in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                site_true = labels[:, 1].long().to(device, non_blocking=True)
                 
                 with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                    site_pred = site_predictor(x_hat)
+                    site_pred = site_predictor(tract_data)
                     site_loss = site_criterion(site_pred, site_true)
                 
                 val_items += batch_size
