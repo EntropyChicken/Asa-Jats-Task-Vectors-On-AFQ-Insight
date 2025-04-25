@@ -996,17 +996,37 @@ def train_vae_age_site_staged(
     save_dir="staged_models",
     val_metric_to_monitor="val_age_mae"
 ):
-    import os
+    import os, sys
+    print(f"DEBUG: Starting train_vae_age_site_staged function")
+    print(f"DEBUG: Training configuration - epochs_stage1={epochs_stage1}, epochs_stage2={epochs_stage2}, device={device}")
+    print(f"DEBUG: KL annealing config - start_epoch={kl_annealing_start_epoch}, duration={kl_annealing_duration}, start_value={kl_annealing_start}")
+    print(f"DEBUG: Data loaders - train_data has {len(train_data)} batches, val_data has {len(val_data)} batches")
+    sys.stdout.flush()
+    
     os.makedirs(save_dir, exist_ok=True)
+    print(f"DEBUG: Created directory {save_dir}")
+    sys.stdout.flush()
     
     torch.backends.cudnn.benchmark = True
     
     # Move models to device
-    vae_model = vae_model.to(device)
-    age_predictor = age_predictor.to(device)
-    site_predictor = site_predictor.to(device)
+    try:
+        print(f"DEBUG: Moving models to device {device}")
+        vae_model = vae_model.to(device)
+        age_predictor = age_predictor.to(device)
+        site_predictor = site_predictor.to(device)
+        print(f"DEBUG: Successfully moved models to {device}")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"ERROR moving models to device: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        sys.stdout.flush()
+        raise
     
     # Set up loss functions
+    print(f"DEBUG: Setting up loss functions")
+    sys.stdout.flush()
     recon_criterion = torch.nn.MSELoss(reduction="mean")
     age_criterion = torch.nn.L1Loss(reduction="mean")  # MAE
     site_criterion = torch.nn.CrossEntropyLoss(reduction="mean")
@@ -1017,9 +1037,26 @@ def train_vae_age_site_staged(
     # STAGE 1: Train each model independently on raw data
     # ====================================================================
     print(f"\n{'='*40}\nSTAGE 1: Training models independently\n{'='*40}")
+    sys.stdout.flush()
     
     # --- STEP 1: Train VAE for reconstruction ---
     print(f"\n{'-'*40}\nTraining VAE for reconstruction...\n{'-'*40}")
+    sys.stdout.flush()
+    
+    try:
+        # Examine first batch of data
+        x_sample, labels_sample = next(iter(train_data))
+        print(f"DEBUG: First batch - x shape: {x_sample.shape}, labels shape: {labels_sample.shape}")
+        print(f"DEBUG: Labels sample: {labels_sample[0]}")
+        if labels_sample.shape[1] < 2:
+            print(f"WARNING: Labels only have {labels_sample.shape[1]} dimensions, expected at least 2")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"ERROR examining first batch: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        sys.stdout.flush()
+    
     vae_optimizer = torch.optim.Adam(vae_model.parameters(), lr=lr)
     vae_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(vae_optimizer, "min", patience=10, factor=0.5, verbose=True)
     
@@ -1037,7 +1074,14 @@ def train_vae_age_site_staged(
     vae_current_lr_epoch = []
     
     # Training loop for VAE
+    print(f"DEBUG: Starting VAE training loop for {epochs_stage1} epochs")
+    print(f"DEBUG: KL annealing will start at epoch {kl_annealing_start_epoch}")
+    sys.stdout.flush()
+    
     for epoch in range(epochs_stage1):
+        print(f"DEBUG: VAE training - Starting epoch {epoch+1}/{epochs_stage1}")
+        sys.stdout.flush()
+        
         # --- KL Beta Calculation ---
         if kl_annealing_duration > 0 and epoch >= kl_annealing_start_epoch:
             annealing_epoch = epoch - kl_annealing_start_epoch
@@ -1053,6 +1097,9 @@ def train_vae_age_site_staged(
         vae_current_beta_epoch.append(current_beta)
         vae_current_lr_epoch.append(vae_optimizer.param_groups[0]["lr"])
         
+        print(f"DEBUG: Current KL weight (beta): {current_beta:.6f}")
+        sys.stdout.flush()
+        
         # Training
         vae_model.train()
         train_recon_loss = 0.0
@@ -1060,31 +1107,66 @@ def train_vae_age_site_staged(
         train_total_loss = 0.0
         train_items = 0
         
+        print(f"DEBUG: VAE epoch {epoch+1} - Starting training loop over {len(train_data)} batches")
+        sys.stdout.flush()
+        
         for i, (x, _) in enumerate(train_data):
+            if i == 0:
+                print(f"DEBUG: VAE epoch {epoch+1} - Processing first batch, shape={x.shape}")
+                sys.stdout.flush()
+            
             batch_size = x.size(0)
-            tract_data = x.to(device, non_blocking=True)
             
-            vae_optimizer.zero_grad(set_to_none=True)
-            
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                x_hat, mean, logvar = vae_model(tract_data)
+            try:
+                tract_data = x.to(device, non_blocking=True)
                 
-                recon_loss = recon_criterion(x_hat, tract_data)
-                kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                vae_optimizer.zero_grad(set_to_none=True)
                 
-                total_loss = recon_loss + current_beta * kl_loss
-            
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(vae_model.parameters(), max_norm=max_grad_norm)
-            vae_optimizer.step()
-            
-            train_items += batch_size
-            train_recon_loss += recon_loss.item() * batch_size
-            train_kl_loss += kl_loss.item() * batch_size
-            train_total_loss += total_loss.item() * batch_size
-            
-            if (i + 1) % 10 == 0:
-                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(train_data)} | Loss: {total_loss.item():.4f}", end="")
+                with torch.amp.autocast('cuda', enabled=(device == "cuda")):
+                    x_hat, mean, logvar = vae_model(tract_data)
+                    
+                    recon_loss = recon_criterion(x_hat, tract_data)
+                    kl_loss_raw = kl_divergence_loss(mean, logvar) / batch_size
+                    
+                    # Explicitly ensure KL loss is zero before start_epoch
+                    if epoch < kl_annealing_start_epoch:
+                        weighted_kl_loss = 0.0
+                        # Still track the raw KL loss for monitoring
+                        kl_loss = kl_loss_raw
+                    else:
+                        weighted_kl_loss = current_beta * kl_loss_raw
+                        kl_loss = kl_loss_raw
+                    
+                    total_loss = recon_loss + weighted_kl_loss
+                
+                total_loss.backward()
+                torch.nn.utils.clip_grad_norm_(vae_model.parameters(), max_norm=max_grad_norm)
+                vae_optimizer.step()
+                
+                train_items += batch_size
+                train_recon_loss += recon_loss.item() * batch_size
+                train_kl_loss += kl_loss.item() * batch_size  # Store raw KL for monitoring
+                train_total_loss += total_loss.item() * batch_size
+                
+                if i == 0:
+                    print(f"DEBUG: VAE epoch {epoch+1} - Completed first batch successfully")
+                    if epoch < kl_annealing_start_epoch:
+                        print(f"DEBUG: KL loss calculated but not used in total loss: {kl_loss.item():.6f}")
+                    sys.stdout.flush()
+                
+                if (i + 1) % 10 == 0:
+                    print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(train_data)} | Loss: {total_loss.item():.4f}", end="")
+                    sys.stdout.flush()
+                    
+            except Exception as e:
+                print(f"\nERROR in VAE training batch {i}: {str(e)}")
+                import traceback
+                print(traceback.format_exc())
+                sys.stdout.flush()
+                raise
+        
+        print(f"\nDEBUG: VAE epoch {epoch+1} - Training loop completed, starting validation")
+        sys.stdout.flush()
         
         # Validation
         vae_model.eval()
@@ -1098,17 +1180,26 @@ def train_vae_age_site_staged(
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
                 
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with torch.amp.autocast('cuda', enabled=(device == "cuda")):
                     x_hat, mean, logvar = vae_model(tract_data)
                     
                     recon_loss = recon_criterion(x_hat, tract_data)
-                    kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                    kl_loss_raw = kl_divergence_loss(mean, logvar) / batch_size
                     
-                    total_loss = recon_loss + current_beta * kl_loss
+                    # Explicitly ensure KL loss is zero before start_epoch for validation too
+                    if epoch < kl_annealing_start_epoch:
+                        weighted_kl_loss = 0.0
+                        # Still track the raw KL loss for monitoring
+                        kl_loss = kl_loss_raw
+                    else:
+                        weighted_kl_loss = current_beta * kl_loss_raw
+                        kl_loss = kl_loss_raw
+                    
+                    total_loss = recon_loss + weighted_kl_loss
                 
                 val_items += batch_size
                 val_recon_loss += recon_loss.item() * batch_size
-                val_kl_loss += kl_loss.item() * batch_size
+                val_kl_loss += kl_loss.item() * batch_size  # Store raw KL for monitoring
                 val_total_loss += total_loss.item() * batch_size
         
         avg_train_recon_loss = train_recon_loss / train_items
@@ -1127,7 +1218,11 @@ def train_vae_age_site_staged(
         vae_train_kl_loss_epoch.append(avg_train_kl_loss)
         vae_val_kl_loss_epoch.append(avg_val_kl_loss)
         
-        print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train Loss: {avg_train_total_loss:.4f} | Val Loss: {avg_val_total_loss:.4f} | Val Recon: {avg_val_recon_loss:.4f} | Val KL: {avg_val_kl_loss:.4f}")
+        print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train Loss: {avg_train_total_loss:.4f} | Val Loss: {avg_val_total_loss:.4f}")
+        print(f"  Recon Loss: {avg_train_recon_loss:.4f} (train) / {avg_val_recon_loss:.4f} (val)")
+        print(f"  KL Loss: {avg_train_kl_loss:.4f} (train) / {avg_val_kl_loss:.4f} (val)")
+        print(f"  KL Weight: {current_beta:.6f}")
+        sys.stdout.flush()
         
         vae_scheduler.step(avg_val_total_loss)
         
@@ -1137,6 +1232,7 @@ def train_vae_age_site_staged(
             best_vae_state = vae_model.state_dict()
             torch.save(best_vae_state, os.path.join(save_dir, "best_vae.pth"))
             print(f"  Saved best VAE model with validation loss: {best_vae_loss:.4f}")
+            sys.stdout.flush()
     
     # Load best VAE model
     vae_model.load_state_dict(best_vae_state)
