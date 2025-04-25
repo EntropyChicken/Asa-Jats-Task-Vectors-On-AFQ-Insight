@@ -135,8 +135,8 @@ try:
     # Set parameters for the staged experiment
     latent_dim = 64  # Choose the larger latent dim
     dropout = 0.0  # VAE dropout
-    age_dropout = 0.0
-    site_dropout = 0.0
+    age_dropout = 0.2
+    site_dropout = 0.2
     w_recon = 1.0
     w_kl = 0.1
     w_age = 5.0  # Higher weight for age prediction
