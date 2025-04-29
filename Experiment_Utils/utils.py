@@ -1369,9 +1369,17 @@ def train_vae_age_site_staged(
         train_items = 0
         
         for i, (x, labels) in enumerate(train_data):
+
+            # In Stage 1, inside the site predictor training loop, after site loss calculation
+            if epoch == 0 and i < 3:  # Only for first few batches of first epoch
+                print(f"Site training debug - Batch {i}:")
+                print(f"  True site labels: {site_true.cpu().unique()}")
+                print(f"  Predicted site classes: {torch.argmax(site_pred, dim=1).cpu().unique()}")
+                print(f"  Raw predictions shape: {site_pred.shape}, Example: {site_pred[0]}")
+
             batch_size = x.size(0)
             tract_data = x.to(device, non_blocking=True)
-            site_true = labels[:, 1].long().to(device, non_blocking=True)
+            site_true = labels[:, 2].long().to(device, non_blocking=True)
             
             site_optimizer.zero_grad(set_to_none=True)
             
@@ -1401,7 +1409,7 @@ def train_vae_age_site_staged(
             for x, labels in val_data:
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
-                site_true = labels[:, 1].long().to(device, non_blocking=True)
+                site_true = labels[:, 2].long().to(device, non_blocking=True)
                 
                 with torch.cuda.amp.autocast(enabled=(device == "cuda")):
                     site_pred = site_predictor(tract_data)
@@ -1493,7 +1501,16 @@ def train_vae_age_site_staged(
     best_epoch = 0
     # Combined training loop
     for epoch in range(epochs_stage2):
-        current_lr_epoch.append(combined_optimizer.param_groups[0]["lr"])
+
+        # In Stage 2, inside the training loop, after model forward pass
+        if epoch == 0 and i < 3:  # Only for first epoch, first few batches
+            print(f"Stage 2 site prediction debug - Batch {i}:")
+            print(f"  Site labels: {site_true.cpu().unique()}")
+            _, predicted_sites = torch.max(site_pred.data, 1)
+            print(f"  Predicted site classes: {predicted_sites.cpu().unique()}")
+            site_probs = F.softmax(site_pred, dim=1)
+            print(f"  Site prediction distribution: {site_probs.mean(dim=0)}")
+            current_lr_epoch.append(combined_optimizer.param_groups[0]["lr"])
         
         # --- GRL Alpha Calculation ---
         # Calculate the GRL alpha value which controls the strength of gradient reversal
@@ -1538,7 +1555,7 @@ def train_vae_age_site_staged(
             batch_size = x.size(0)
             tract_data = x.to(device, non_blocking=True)
             age_true = labels[:, 0].float().unsqueeze(1).to(device)
-            site_true = labels[:, 1].long().to(device, non_blocking=True)
+            site_true = labels[:, 2].long().to(device, non_blocking=True)
             
             combined_optimizer.zero_grad(set_to_none=True)
             
@@ -1596,7 +1613,7 @@ def train_vae_age_site_staged(
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
                 age_true = labels[:, 0].float().unsqueeze(1).to(device)
-                site_true = labels[:, 1].long().to(device, non_blocking=True)
+                site_true = labels[:, 2].long().to(device, non_blocking=True)
                 
                 with torch.cuda.amp.autocast(enabled=(device == "cuda")):
                     x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha)
