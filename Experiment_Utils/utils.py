@@ -354,15 +354,18 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
      torch_dataset_fa, train_loader_fa, test_loader_fa, val_loader_fa = prep_fa_dataset(
          dataset, target_labels="dki_fa", batch_size=batch_size
      )
+
+     print(train_loader_fa.dataset[0][1][2])
  
      # 2. Get necessary info for remapping from the original dataset
      try:
          original_target_cols = dataset.target_cols
          age_idx = original_target_cols.index(age_col_name)
          site_idx = original_target_cols.index(site_col_name)
-         print(f"Remapping prep: Using age index {age_idx}, site index {site_idx} from {original_target_cols}")
+         sex_idx = original_target_cols.index('sex') # Add sex index
+         print(f"Remapping prep: Using age index {age_idx}, site index {site_idx}, sex index {sex_idx} from {original_target_cols}")
      except (AttributeError, ValueError) as e:
-         print(f"Error finding columns '{age_col_name}' or '{site_col_name}' in dataset.target_cols: {e}")
+         print(f"Error finding columns '{age_col_name}', '{site_col_name}', or 'sex' in dataset.target_cols: {e}")
          raise ValueError("Could not find required columns for remapping.") from e
  
      # Define the site map {original_id: new_id}
@@ -371,7 +374,7 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
  
      # 3. Define the modified AllTractsDataset with remapping
      class AllTractsRemappedDataset(Dataset):
-         def __init__(self, original_fa_dataset, age_idx, site_idx, site_map):
+         def __init__(self, original_fa_dataset, age_idx, site_idx, sex_idx, site_map):
              self.original_fa_dataset = original_fa_dataset # This is the FA-only TensorDataset
              self.sample_count = len(original_fa_dataset)
              # Assuming original_fa_dataset[0][0] gives fa_tract data [num_tracts, num_nodes]
@@ -379,6 +382,7 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
              self.tract_count = sample_x.shape[0]
              self.age_idx = age_idx
              self.site_idx = site_idx
+             self.sex_idx = sex_idx
              self.site_map = site_map
              if not isinstance(original_fa_dataset, torch.utils.data.Dataset):
                   raise TypeError("original_fa_dataset must be an instance of torch.utils.data.Dataset")
@@ -400,25 +404,26 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
              # Ensure it has shape [1, num_nodes] for Conv1D
              tract_data = fa_data[tract_idx : tract_idx + 1, :].clone()
  
-             # Extract age and original site from the original y tensor
+             # Extract age, site and sex from the original y tensor
              age = original_y[self.age_idx].item()
              original_site = original_y[self.site_idx].item()
+             sex = original_y[self.sex_idx].item()
  
              # Remap the site ID
              remapped_site = self.site_map.get(original_site, -1.0) # Default to -1.0 if not found
              if remapped_site == -1.0:
                   print(f"Warning: Site value {original_site} at original index {sample_idx} not in map!")
  
-             # Create the new label tensor [age, remapped_site]
-             new_labels = torch.tensor([age, remapped_site], dtype=torch.float32)
+             # Create the new label tensor [age, remapped_site, sex]
+             new_labels = torch.tensor([age, sex, remapped_site], dtype=torch.float32)
  
              return tract_data, new_labels
  
      # 4. Create instances of the new Dataset using the base FA datasets
      print("Creating remapped datasets...")
-     all_tracts_train_dataset = AllTractsRemappedDataset(train_loader_fa.dataset, age_idx, site_idx, site_map)
-     all_tracts_test_dataset = AllTractsRemappedDataset(test_loader_fa.dataset, age_idx, site_idx, site_map)
-     all_tracts_val_dataset = AllTractsRemappedDataset(val_loader_fa.dataset, age_idx, site_idx, site_map)
+     all_tracts_train_dataset = AllTractsRemappedDataset(train_loader_fa.dataset, age_idx, site_idx, sex_idx, site_map)
+     all_tracts_test_dataset = AllTractsRemappedDataset(test_loader_fa.dataset, age_idx, site_idx, sex_idx, site_map)
+     all_tracts_val_dataset = AllTractsRemappedDataset(val_loader_fa.dataset, age_idx, site_idx, sex_idx, site_map)
  
      # 5. Create the final DataLoaders
      print("Creating final DataLoaders...")
