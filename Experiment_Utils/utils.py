@@ -1589,10 +1589,11 @@ def train_vae_age_site_staged(
             _, predicted_sites = torch.max(site_pred.data, 1)
             running_site_correct += (predicted_sites == site_true).sum().item()
 
-            print("predicted age: ", age_pred)
-            print("true age: ", age_true)
-            print("predicted site: ", predicted_sites)
-            print("true site: ", site_true)
+            if epoch == 0 and i < 3:  # Only print for first 3 batches of first epoch
+                print("predicted age: ", age_pred)
+                print("true age: ", age_true)
+                print("predicted site: ", predicted_sites)
+                print("true site: ", site_true)
             
             if (i + 1) % 10 == 0:
                 print(f"\rEpoch {epoch+1}/{epochs_stage2} | Batch {i+1}/{len(train_data)} | Loss: {total_loss.item():.4f}", end="")
