@@ -139,7 +139,7 @@ try:
     site_dropout = 0.2
     w_recon = 1.0
     w_kl = 0.1
-    w_age = 5.0  # Higher weight for age prediction
+    w_age = 10.0  # Higher weight for age prediction
     w_site = 5.0  # Higher weight for site adversarial training
     
     print("DEBUG: Creating models")
@@ -148,13 +148,16 @@ try:
     # Create models
     try:
         vae = Conv1DVariationalAutoencoder_fa(latent_dims=latent_dim, dropout=dropout)
+        
+        # AgePredictorCNN now accepts sex information to improve age prediction
         age_predictor = AgePredictorCNN(input_channels=input_channels, 
-                                      sequence_length=sequence_length, 
-                                      dropout=age_dropout)
+                                       sequence_length=sequence_length, 
+                                       dropout=age_dropout)
+                                       
         site_predictor = SitePredictorCNN(num_sites=4, 
-                                        input_channels=input_channels, 
-                                        sequence_length=sequence_length, 
-                                        dropout=site_dropout)
+                                         input_channels=input_channels, 
+                                         sequence_length=sequence_length, 
+                                         dropout=site_dropout)
         print("DEBUG: Successfully created models")
         sys.stdout.flush()
     except Exception as e:

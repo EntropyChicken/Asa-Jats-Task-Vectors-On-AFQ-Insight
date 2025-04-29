@@ -161,7 +161,8 @@ class AgePredictorCNN(nn.Module):
         _conv_output_shape = self._get_conv_output_shape(_dummy_input)
         flat_size = _conv_output_shape[1] * _conv_output_shape[2]
 
-        self.fc1 = nn.Linear(flat_size, 64)
+        # Add an extra input for sex in the first fully connected layer
+        self.fc1 = nn.Linear(flat_size + 1, 64)  # +1 for sex feature
         self.fc_out = nn.Linear(64, 1)
 
     def _get_conv_output_shape(self, x):
@@ -170,7 +171,7 @@ class AgePredictorCNN(nn.Module):
         x = self.relu(self.bn3(self.conv3(x)))
         return x.shape
 
-    def forward(self, x):
+    def forward(self, x, sex=None):
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.dropout(x)
         x = self.relu(self.bn2(self.conv2(x)))
@@ -179,6 +180,18 @@ class AgePredictorCNN(nn.Module):
         x = self.dropout(x)
 
         x = self.flatten(x)
+        
+        # Concatenate sex information if provided
+        if sex is not None:
+            # Ensure sex has the right shape [batch_size, 1]
+            if len(sex.shape) == 1:
+                sex = sex.unsqueeze(1)
+            x = torch.cat([x, sex], dim=1)
+        else:
+            # If sex not provided, add a zero column as placeholder
+            zeros = torch.zeros(x.size(0), 1, device=x.device)
+            x = torch.cat([x, zeros], dim=1)
+            
         x = self.relu(self.fc1(x))
         x = self.dropout(x)
         age_pred = self.fc_out(x)
@@ -246,9 +259,9 @@ class CombinedVAE_Predictors(nn.Module):
         self.age_predictor = age_predictor
         self.site_predictor = site_predictor
 
-    def forward(self, x, grl_alpha=1.0):
+    def forward(self, x, sex=None, grl_alpha=1.0):
         x_hat, mean, logvar = self.vae(x)
-        age_pred = self.age_predictor(x_hat)
+        age_pred = self.age_predictor(x_hat, sex)
         x_hat_reversed = grad_reverse(x_hat, grl_alpha)
         site_pred = self.site_predictor(x_hat_reversed)
         return x_hat, mean, logvar, age_pred, site_pred
