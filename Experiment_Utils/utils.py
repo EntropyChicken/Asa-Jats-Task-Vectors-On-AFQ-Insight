@@ -1544,11 +1544,6 @@ def train_vae_age_site_staged(
                 kl_loss = kl_divergence_loss(mean, logvar) / batch_size
                 age_loss = age_criterion(age_pred, age_true)
                 site_loss = site_criterion(site_pred, site_true)
-
-                print("predicted age: ", age_pred)
-                print("true age: ", age_true)
-                print("predicted site: ", site_pred)
-                print("true site: ", site_true)
                 
                 # In adversarial training with frozen predictors:
                 # 1. Maximize age prediction performance (minimize loss)
@@ -1571,6 +1566,11 @@ def train_vae_age_site_staged(
             running_age_mae_sum += age_loss.item() * batch_size  # L1 loss is MAE
             _, predicted_sites = torch.max(site_pred.data, 1)
             running_site_correct += (predicted_sites == site_true).sum().item()
+
+            print("predicted age: ", age_pred)
+            print("true age: ", age_true)
+            print("predicted site: ", predicted_sites)
+            print("true site: ", site_true)
             
             if (i + 1) % 10 == 0:
                 print(f"\rEpoch {epoch+1}/{epochs_stage2} | Batch {i+1}/{len(train_data)} | Loss: {total_loss.item():.4f}", end="")
