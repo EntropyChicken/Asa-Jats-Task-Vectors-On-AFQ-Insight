@@ -1544,6 +1544,11 @@ def train_vae_age_site_staged(
                 kl_loss = kl_divergence_loss(mean, logvar) / batch_size
                 age_loss = age_criterion(age_pred, age_true)
                 site_loss = site_criterion(site_pred, site_true)
+
+                print("predicted age: ", age_pred)
+                print("true age: ", age_true)
+                print("predicted site: ", site_pred)
+                print("true site: ", site_true)
                 
                 # In adversarial training with frozen predictors:
                 # 1. Maximize age prediction performance (minimize loss)
