@@ -1373,21 +1373,21 @@ def train_vae_age_site_staged(
         for i, (x, labels) in enumerate(train_data):
 
             # In Stage 1, inside the site predictor training loop, after site loss calculation
-            if epoch == 0 and i < 3:  # Only for first few batches of first epoch
-                print(f"Site training debug - Batch {i}:")
-                print(f"  True site labels: {site_true.cpu().unique()}")
-                print(f"  Predicted site classes: {torch.argmax(site_pred, dim=1).cpu().unique()}")
-                print(f"  Raw predictions shape: {site_pred.shape}, Example: {site_pred[0]}")
-
             batch_size = x.size(0)
             tract_data = x.to(device, non_blocking=True)
             site_true = labels[:, 2].long().to(device, non_blocking=True)
-            
+
             site_optimizer.zero_grad(set_to_none=True)
             
             with torch.cuda.amp.autocast(enabled=(device == "cuda")):
                 site_pred = site_predictor(tract_data)
                 site_loss = site_criterion(site_pred, site_true)
+
+            if epoch == 0 and i < 3:  # Only for first few batches of first epoch
+                print(f"Site training debug - Batch {i}:")
+                print(f"  True site labels: {site_true.cpu().unique()}")
+                print(f"  Predicted site classes: {torch.argmax(site_pred, dim=1).cpu().unique()}")
+                print(f"  Raw predictions shape: {site_pred.shape}, Example: {site_pred[0]}")
             
             site_loss.backward()
             torch.nn.utils.clip_grad_norm_(site_predictor.parameters(), max_norm=max_grad_norm)
