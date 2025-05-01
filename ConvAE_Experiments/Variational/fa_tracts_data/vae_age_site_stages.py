@@ -139,7 +139,7 @@ try:
     site_dropout = 0.2
     w_recon = 1.0
     w_kl = 0.1
-    w_age = 10.0  # Higher weight for age prediction
+    w_age = 15.0  # Higher weight for age prediction
     w_site = 5.0  # Higher weight for site adversarial training
     
     print("DEBUG: Creating models")

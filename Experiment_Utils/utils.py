@@ -1372,7 +1372,7 @@ def train_vae_age_site_staged(
         
         for i, (x, labels) in enumerate(train_data):
 
-            # In Stage 1, inside the site predictor training loop, after site loss calculation
+            # In Stage 1, p the site predictor training loop, after site loss calculation
             batch_size = x.size(0)
             tract_data = x.to(device, non_blocking=True)
             site_true = labels[:, 2].long().to(device, non_blocking=True)
@@ -1465,14 +1465,14 @@ def train_vae_age_site_staged(
     combined_model = CombinedVAE_Predictors(vae_model, age_predictor, site_predictor)
     combined_model = combined_model.to(device)
     
-    # Freeze Age and Site Predictor weights
-    for param in age_predictor.parameters():
-        param.requires_grad = False
+    # # Freeze Age and Site Predictor weights
+    # for param in age_predictor.parameters():
+    #     param.requires_grad = False
     
-    for param in site_predictor.parameters():
-        param.requires_grad = False
+    # for param in site_predictor.parameters():
+    #     param.requires_grad = False
     
-    print("Age and Site Predictor weights are now frozen")
+    # print("Age and Site Predictor weights are now frozen")
     
     combined_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, combined_model.parameters()), lr=lr)
     combined_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
