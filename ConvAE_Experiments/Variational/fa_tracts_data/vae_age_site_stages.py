@@ -196,8 +196,8 @@ try:
             kl_annealing_duration=200,
             kl_annealing_start=0.001,
             grl_alpha_start=0.0,
-            grl_alpha_end=2.5,
-            grl_alpha_epochs=150,
+            grl_alpha_end=5.0,
+            grl_alpha_epochs=300,
             save_dir=staged_save_directory,
             val_metric_to_monitor="val_age_mae"
         )

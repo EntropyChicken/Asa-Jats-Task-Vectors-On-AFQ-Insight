@@ -1529,14 +1529,14 @@ def train_vae_age_site_staged(
                 combined_optimizer = torch.optim.Adam([
                     {'params': vae_model.parameters(), 'lr': lr},
                     {'params': age_predictor.parameters(), 'lr': lr * 0.01 * phase2_progress},
-                    {'params': site_predictor.parameters(), 'lr': lr * 0.005 * phase2_progress}
+                    {'params': site_predictor.parameters(), 'lr': lr * 0.0001 * phase2_progress}
                 ])
                 combined_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(combined_optimizer, "min", patience=10, factor=0.5, verbose=True)
                 print(f"Created new optimizer with controlled learning rates")
             elif epoch > phase1_epochs:
                 # Update learning rates based on progress
                 combined_optimizer.param_groups[1]['lr'] = lr * 0.01 * phase2_progress
-                combined_optimizer.param_groups[2]['lr'] = lr * 0.005 * phase2_progress
+                combined_optimizer.param_groups[2]['lr'] = lr * 0.0001 * phase2_progress
                 
                 print(f"Phase 2 Progress: {phase2_progress:.2f} | VAE lr: {combined_optimizer.param_groups[0]['lr']:.6f} | " +
                       f"Age lr: {combined_optimizer.param_groups[1]['lr']:.6f} | Site lr: {combined_optimizer.param_groups[2]['lr']:.6f}")
