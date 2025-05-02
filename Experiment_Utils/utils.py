@@ -1464,22 +1464,8 @@ def train_vae_age_site_staged(
     from models import CombinedVAE_Predictors
     combined_model = CombinedVAE_Predictors(vae_model, age_predictor, site_predictor)
     combined_model = combined_model.to(device)
-    
-    # # Freeze Age and Site Predictor weights
-    # for param in age_predictor.parameters():
-    #     param.requires_grad = False
-    
-    # for param in site_predictor.parameters():
-    #     param.requires_grad = False
-    
-    # print("Age and Site Predictor weights are now frozen")
-    
-    combined_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, combined_model.parameters()), lr=lr)
-    combined_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        combined_optimizer, "min", patience=10, factor=0.5, verbose=True
-    )
-    
-    # Training metrics
+
+    # Training metrics - keep all your existing metrics
     train_loss_epoch = []
     val_loss_epoch = []
     train_recon_loss_epoch = []
@@ -1501,33 +1487,71 @@ def train_vae_age_site_staged(
     best_val_metric_value = float("inf")
     best_combined_state = None
     best_epoch = 0
-    # Combined training loop
-    for epoch in range(epochs_stage2):
 
-        # In Stage 2, inside the training loop, after model forward pass
-        if epoch == 0 and i < 3:  # Only for first epoch, first few batches
-            print(f"Stage 2 site prediction debug - Batch {i}:")
-            print(f"  Site labels: {site_true.cpu().unique()}")
-            _, predicted_sites = torch.max(site_pred.data, 1)
-            print(f"  Predicted site classes: {predicted_sites.cpu().unique()}")
-            site_probs = F.softmax(site_pred, dim=1)
-            print(f"  Site prediction distribution: {site_probs.mean(dim=0)}")
-            current_lr_epoch.append(combined_optimizer.param_groups[0]["lr"])
+    # Define the total epochs for Stage 2
+    total_stage2_epochs = epochs_stage2
+    phase1_epochs = total_stage2_epochs // 2
+    phase2_epochs = total_stage2_epochs - phase1_epochs
+
+    print(f"Phase 1: {phase1_epochs} epochs with frozen predictors")
+    print(f"Phase 2: {phase2_epochs} epochs with gradual unfreezing")
+
+    # Combined training loop
+    for epoch in range(total_stage2_epochs):
+        # Phase management
+        if epoch < phase1_epochs:
+            # Phase 1: Freeze predictors
+            for param in age_predictor.parameters():
+                param.requires_grad = False
+            
+            for param in site_predictor.parameters():
+                param.requires_grad = False
+            
+            if epoch == 0:
+                print("Phase 1: Age and Site Predictor weights are frozen")
+                combined_optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, combined_model.parameters()), lr=lr)
+                combined_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(combined_optimizer, "min", patience=10, factor=0.5, verbose=True)
+        else:
+            # Phase 2: Unfreeze predictors with gradually increasing learning rates
+            phase2_progress = (epoch - phase1_epochs) / max(1, phase2_epochs - 1)  # 0 to 1
+            
+            if epoch == phase1_epochs:
+                print("Phase 2: Unfreezing Age and Site Predictor weights with controlled learning rates")
+                
+                # Unfreeze predictors
+                for param in age_predictor.parameters():
+                    param.requires_grad = True
+                
+                for param in site_predictor.parameters():
+                    param.requires_grad = True
+                
+                # Create a new optimizer with different learning rates
+                combined_optimizer = torch.optim.Adam([
+                    {'params': vae_model.parameters(), 'lr': lr},
+                    {'params': age_predictor.parameters(), 'lr': lr * 0.01 * phase2_progress},
+                    {'params': site_predictor.parameters(), 'lr': lr * 0.005 * phase2_progress}
+                ])
+                combined_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(combined_optimizer, "min", patience=10, factor=0.5, verbose=True)
+                print(f"Created new optimizer with controlled learning rates")
+            elif epoch > phase1_epochs:
+                # Update learning rates based on progress
+                combined_optimizer.param_groups[1]['lr'] = lr * 0.01 * phase2_progress
+                combined_optimizer.param_groups[2]['lr'] = lr * 0.005 * phase2_progress
+                
+                print(f"Phase 2 Progress: {phase2_progress:.2f} | VAE lr: {combined_optimizer.param_groups[0]['lr']:.6f} | " +
+                      f"Age lr: {combined_optimizer.param_groups[1]['lr']:.6f} | Site lr: {combined_optimizer.param_groups[2]['lr']:.6f}")
         
+        # Store current learning rate
+        current_lr_epoch.append(combined_optimizer.param_groups[0]["lr"])
+
         # --- GRL Alpha Calculation ---
-        # Calculate the GRL alpha value which controls the strength of gradient reversal
-        # If we're still in the alpha annealing phase (epoch < grl_alpha_epochs)
         if grl_alpha_epochs > 0 and epoch < grl_alpha_epochs:
-            # Calculate linear progress from 0 to 1 over the annealing period
             progress = epoch / grl_alpha_epochs
-            # Linearly interpolate alpha from start to end value based on progress
             current_grl_alpha = grl_alpha_start + (grl_alpha_end - grl_alpha_start) * progress
         else:
-            # After annealing period, use the final alpha value
             current_grl_alpha = grl_alpha_end
-        # Store the alpha value for this epoch
         current_grl_alpha_epoch.append(current_grl_alpha)
-        
+
         # --- KL Beta Calculation ---
         if kl_annealing_duration > 0 and epoch >= kl_annealing_start_epoch:
             annealing_epoch = epoch - kl_annealing_start_epoch
