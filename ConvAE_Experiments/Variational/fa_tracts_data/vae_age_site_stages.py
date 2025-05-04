@@ -185,7 +185,7 @@ try:
             val_data=val_loader_raw,
             epochs_stage1=500,  # For individual training
             epochs_stage2=1000,  # For adversarial training
-            lr=0.001,
+            lr=0.0001,
             device=device,
             max_grad_norm=1.0,
             w_recon=w_recon,
@@ -196,7 +196,7 @@ try:
             kl_annealing_duration=200,
             kl_annealing_start=0.001,
             grl_alpha_start=0.0,
-            grl_alpha_end=5.0,
+            grl_alpha_end=7.5,
             grl_alpha_epochs=300,
             save_dir=staged_save_directory,
             val_metric_to_monitor="val_age_mae"
