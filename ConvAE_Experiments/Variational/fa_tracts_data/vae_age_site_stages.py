@@ -34,7 +34,7 @@ try:
     print("DEBUG: Importing utility functions")
     sys.stdout.flush()
     from utils import select_device, kl_divergence_loss,prep_fa_flattned_data, prep_fa_flattened_remapped_data, train_vae_age_site_staged
-    from models import Conv1DVariationalAutoencoder_fa, AgePredictorCNN, SitePredictorCNN, CombinedVAE_Predictors
+    from models import Conv1DVariationalAutoencoder_fa, AgePredictorCNN, SitePredictorCNN, CombinedVAE_Predictors, ImprovedAgePredictorCNN
     print("DEBUG: Successfully imported utility functions")
     sys.stdout.flush()
 except Exception as e:
@@ -150,9 +150,12 @@ try:
         vae = Conv1DVariationalAutoencoder_fa(latent_dims=latent_dim, dropout=dropout)
         
         # AgePredictorCNN now accepts sex information to improve age prediction
-        age_predictor = AgePredictorCNN(input_channels=input_channels, 
-                                       sequence_length=sequence_length, 
-                                       dropout=age_dropout)
+        # age_predictor = AgePredictorCNN(input_channels=input_channels, 
+        #                                sequence_length=sequence_length, 
+        #                                dropout=age_dropout)
+        age_predictor = ImprovedAgePredictorCNN(input_channels=input_channels, 
+                                               sequence_length=sequence_length, 
+                                               dropout=age_dropout)
                                        
         site_predictor = SitePredictorCNN(num_sites=4, 
                                          input_channels=input_channels, 

@@ -265,3 +265,160 @@ class CombinedVAE_Predictors(nn.Module):
         x_hat_reversed = grad_reverse(x_hat, grl_alpha)
         site_pred = self.site_predictor(x_hat_reversed)
         return x_hat, mean, logvar, age_pred, site_pred
+
+# Helper components for ImprovedAgePredictorCNN
+class ResidualBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv1 = nn.Conv1d(channels, channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm1d(channels)
+        self.conv2 = nn.Conv1d(channels, channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm1d(channels)
+        
+    def forward(self, x):
+        residual = x
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += residual  # Skip connection
+        return F.relu(out)
+
+class SelfAttention1D(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.query = nn.Conv1d(in_channels, in_channels//8, kernel_size=1)
+        self.key = nn.Conv1d(in_channels, in_channels//8, kernel_size=1)
+        self.value = nn.Conv1d(in_channels, in_channels, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))
+        
+    def forward(self, x):
+        batch_size, C, L = x.size()
+        proj_query = self.query(x).permute(0, 2, 1)
+        proj_key = self.key(x)
+        energy = torch.bmm(proj_query, proj_key)
+        attention = F.softmax(energy, dim=-1)
+        proj_value = self.value(x)
+        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
+        out = self.gamma * out + x
+        return out
+
+class MultiScaleConv(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        # Ensure divisibility by 3
+        each_channel = out_channels // 3
+        remainder = out_channels - (each_channel * 3)
+        
+        self.conv3 = nn.Conv1d(in_channels, each_channel, kernel_size=3, padding=1)
+        self.conv5 = nn.Conv1d(in_channels, each_channel, kernel_size=5, padding=2)
+        self.conv7 = nn.Conv1d(in_channels, each_channel + remainder, kernel_size=7, padding=3)
+        
+    def forward(self, x):
+        return torch.cat([self.conv3(x), self.conv5(x), self.conv7(x)], dim=1)
+
+class ImprovedAgePredictorCNN(nn.Module):
+    def __init__(self, input_channels=1, sequence_length=50, dropout=0.3):
+        super().__init__()
+        
+        # Initial convolution
+        self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=5, stride=1, padding=2)
+        self.bn1 = nn.BatchNorm1d(32)
+        
+        # Multi-scale processing
+        self.multi_scale1 = MultiScaleConv(32, 63)  # Will give 63 channels (21*3)
+        self.bn_ms1 = nn.BatchNorm1d(63)
+        
+        # Residual blocks
+        self.res1 = ResidualBlock(63)
+        self.res2 = ResidualBlock(63)
+        
+        # Attention mechanism
+        self.attention = SelfAttention1D(63)
+        
+        # Deeper processing
+        self.conv2 = nn.Conv1d(63, 128, kernel_size=3, stride=2, padding=1)
+        self.bn2 = nn.BatchNorm1d(128)
+        
+        # Another residual block
+        self.res3 = ResidualBlock(128)
+        
+        self.flatten = nn.Flatten()
+        self.dropout = nn.Dropout(dropout)
+        self.relu = nn.ReLU()
+        
+        # Calculate final conv output size
+        _dummy_input = torch.randn(1, input_channels, sequence_length)
+        _conv_output_shape = self._get_conv_output_shape(_dummy_input)
+        flat_size = _conv_output_shape[1] * _conv_output_shape[2]
+        
+        # Sex integration
+        self.sex_embedding = nn.Sequential(
+            nn.Linear(1, 16),
+            nn.ReLU(),
+            nn.Linear(16, 32)
+        )
+        
+        # FC layers with more capacity
+        self.fc1 = nn.Linear(flat_size + 32, 256)  # +32 for sex embedding
+        self.bn_fc1 = nn.BatchNorm1d(256)
+        self.fc2 = nn.Linear(256, 128)
+        self.bn_fc2 = nn.BatchNorm1d(128)
+        self.fc3 = nn.Linear(128, 64)
+        self.bn_fc3 = nn.BatchNorm1d(64)
+        
+        # Output layer
+        self.fc_out = nn.Linear(64, 1)
+    
+    def _get_conv_output_shape(self, x):
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.relu(self.bn_ms1(self.multi_scale1(x)))
+        x = self.res1(x)
+        x = self.res2(x)
+        x = self.attention(x)
+        x = self.relu(self.bn2(self.conv2(x)))
+        x = self.res3(x)
+        return x.shape
+    
+    def forward(self, x, sex=None):
+        # Process tract data
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.dropout(x)
+        
+        x = self.relu(self.bn_ms1(self.multi_scale1(x)))
+        x = self.dropout(x)
+        
+        x = self.res1(x)
+        x = self.res2(x)
+        x = self.attention(x)
+        
+        x = self.relu(self.bn2(self.conv2(x)))
+        x = self.dropout(x)
+        
+        x = self.res3(x)
+        x = self.flatten(x)
+        
+        # Process sex data
+        if sex is not None:
+            # Ensure sex has the right shape [batch_size, 1]
+            if len(sex.shape) == 1:
+                sex = sex.unsqueeze(1)
+            sex_features = self.sex_embedding(sex)
+        else:
+            # If sex not provided, add zero features
+            sex_features = torch.zeros(x.size(0), 32, device=x.device)
+        
+        # Combine features
+        combined = torch.cat([x, sex_features], dim=1)
+        
+        combined = self.relu(self.bn_fc1(self.fc1(combined)))
+        combined = self.dropout(combined)
+        
+        combined = self.relu(self.bn_fc2(self.fc2(combined)))
+        combined = self.dropout(combined)
+        
+        combined = self.relu(self.bn_fc3(self.fc3(combined)))
+        combined = self.dropout(combined)
+        
+        # Generate output
+        age_pred = self.fc_out(combined)
+        
+        return age_pred
