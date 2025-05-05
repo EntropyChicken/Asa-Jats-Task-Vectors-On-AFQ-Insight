@@ -1256,7 +1256,7 @@ def train_vae_age_site_staged(
     # --- STEP 2: Train Age Predictor on raw data ---
     print(f"\n{'-'*40}\nTraining Age Predictor on raw data...\n{'-'*40}")
     
-    age_optimizer = torch.optim.Adam(age_predictor.parameters(), lr=lr*5)
+    age_optimizer = torch.optim.Adam(age_predictor.parameters(), lr=lr*20)
     age_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(age_optimizer, "min", patience=10, factor=0.5, verbose=True)
     
     best_age_mae = float("inf")
@@ -1268,7 +1268,7 @@ def train_vae_age_site_staged(
     age_current_lr_epoch = []
     
     # Training loop for Age Predictor on raw data
-    for epoch in range(epochs_stage1):
+    for epoch in range(epochs_stage1*2):
         age_current_lr_epoch.append(age_optimizer.param_groups[0]["lr"])
         
         # Training
