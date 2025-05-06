@@ -977,6 +977,45 @@ def grad_reverse(x, alpha=1.0):
     """Helper function to apply the Gradient Reversal Layer."""
     return GradReverse.apply(x, alpha)
 
+def calculate_r2_score(y_true, y_pred):
+    """
+    Calculate the coefficient of determination (R²) between true and predicted values.
+    
+    Parameters
+    ----------
+    y_true : torch.Tensor
+        True values
+    y_pred : torch.Tensor
+        Predicted values
+        
+    Returns
+    -------
+    float
+        R² score (coefficient of determination)
+    """
+    if torch.isnan(y_true).any() or torch.isnan(y_pred).any():
+        # Handle NaN values by removing them from both tensors
+        valid_mask = ~(torch.isnan(y_true) | torch.isnan(y_pred))
+        y_true = y_true[valid_mask]
+        y_pred = y_pred[valid_mask]
+        
+        if len(y_true) == 0:  # If no valid data points remain
+            return float('nan')
+    
+    y_true_mean = torch.mean(y_true)
+    total_sum_squares = torch.sum((y_true - y_true_mean) ** 2)
+    residual_sum_squares = torch.sum((y_true - y_pred) ** 2)
+    
+    if total_sum_squares == 0:
+        return float('nan')  # Can't calculate R² if all true values are identical
+        
+    r2 = 1 - (residual_sum_squares / total_sum_squares)
+    
+    # Clamp to prevent negative values (which can happen if predictions are worse than just predicting the mean)
+    r2 = max(0.0, r2.item())
+    
+    return r2
+
 def train_vae_age_site_staged(
     vae_model,
     age_predictor,
@@ -1265,6 +1304,8 @@ def train_vae_age_site_staged(
     # Initialize metrics tracking for Age Predictor
     age_train_loss_epoch = []
     age_val_loss_epoch = []
+    age_train_r2_epoch = []  # Add R² tracking
+    age_val_r2_epoch = []    # Add R² tracking
     age_current_lr_epoch = []
     
     # Training loop for Age Predictor on raw data
@@ -1274,6 +1315,8 @@ def train_vae_age_site_staged(
         # Training
         age_predictor.train()
         train_age_loss = 0.0
+        train_predictions = []
+        train_targets = []
         train_items = 0
         
         for i, (x, labels) in enumerate(train_data):
@@ -1295,12 +1338,23 @@ def train_vae_age_site_staged(
             train_items += batch_size
             train_age_loss += age_loss.item() * batch_size
             
+            # Collect predictions and targets for R² calculation
+            train_predictions.append(age_pred.detach())
+            train_targets.append(age_true.detach())
+            
             if (i + 1) % 10 == 0:
-                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(train_data)} | MAE: {age_loss.item():.4f}", end="")
+                print(f"\rEpoch {epoch+1}/{epochs_stage1*2} | Batch {i+1}/{len(train_data)} | MAE: {age_loss.item():.4f}", end="")
+        
+        # Calculate R² for training set
+        all_train_preds = torch.cat(train_predictions)
+        all_train_targets = torch.cat(train_targets)
+        train_r2 = calculate_r2_score(all_train_targets, all_train_preds)
         
         # Validation
         age_predictor.eval()
         val_age_loss = 0.0
+        val_predictions = []
+        val_targets = []
         val_items = 0
         
         with torch.no_grad():
@@ -1308,14 +1362,23 @@ def train_vae_age_site_staged(
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
                 age_true = labels[:, 0].float().unsqueeze(1).to(device)
-                sex_data = labels[:, 1].float().to(device)  # Get sex data from labels
+                sex_data = labels[:, 1].float().to(device) 
                 
                 with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                    age_pred = age_predictor(tract_data, sex_data)  # Pass sex data to age predictor
+                    age_pred = age_predictor(tract_data, sex_data)  
                     age_loss = age_criterion(age_pred, age_true)
                 
                 val_items += batch_size
                 val_age_loss += age_loss.item() * batch_size
+                
+                # Collect predictions and targets for R² calculation
+                val_predictions.append(age_pred)
+                val_targets.append(age_true)
+        
+        # Calculate R² for validation set
+        all_val_preds = torch.cat(val_predictions)
+        all_val_targets = torch.cat(val_targets)
+        val_r2 = calculate_r2_score(all_val_targets, all_val_preds)
         
         avg_train_age_loss = train_age_loss / train_items
         avg_val_age_loss = val_age_loss / val_items
@@ -1323,8 +1386,11 @@ def train_vae_age_site_staged(
         # Store metrics
         age_train_loss_epoch.append(avg_train_age_loss)
         age_val_loss_epoch.append(avg_val_age_loss)
+        age_train_r2_epoch.append(train_r2)
+        age_val_r2_epoch.append(val_r2)
         
-        print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train MAE: {avg_train_age_loss:.4f} | Val MAE: {avg_val_age_loss:.4f}")
+        print(f"\nEpoch {epoch+1}/{epochs_stage1*2} | Train MAE: {avg_train_age_loss:.4f} | Val MAE: {avg_val_age_loss:.4f}")
+        print(f"  Train R²: {train_r2:.4f} | Val R²: {val_r2:.4f}")
         
         age_scheduler.step(avg_val_age_loss)
         
@@ -1333,7 +1399,7 @@ def train_vae_age_site_staged(
             best_age_mae = avg_val_age_loss
             best_age_state = age_predictor.state_dict()
             torch.save(best_age_state, os.path.join(save_dir, "best_age_predictor.pth"))
-            print(f"  Saved best Age Predictor model with validation MAE: {best_age_mae:.4f}")
+            print(f"  Saved best Age Predictor model with validation MAE: {best_age_mae:.4f}, R²: {val_r2:.4f}")
     
     # Load best Age Predictor model
     age_predictor.load_state_dict(best_age_state)
@@ -1341,6 +1407,8 @@ def train_vae_age_site_staged(
         "best_val_mae": best_age_mae,
         "train_loss_epoch": age_train_loss_epoch,
         "val_loss_epoch": age_val_loss_epoch,
+        "train_r2_epoch": age_train_r2_epoch,  # Add R² metrics to results
+        "val_r2_epoch": age_val_r2_epoch,      # Add R² metrics to results
         "current_lr_epoch": age_current_lr_epoch
     }
     
@@ -1353,7 +1421,6 @@ def train_vae_age_site_staged(
     best_site_loss = float("inf")
     best_site_state = None
     
-    # Initialize metrics tracking for Site Predictor
     site_train_loss_epoch = []
     site_val_loss_epoch = []
     site_train_acc_epoch = []
@@ -1372,7 +1439,6 @@ def train_vae_age_site_staged(
         
         for i, (x, labels) in enumerate(train_data):
 
-            # In Stage 1, p the site predictor training loop, after site loss calculation
             batch_size = x.size(0)
             tract_data = x.to(device, non_blocking=True)
             site_true = labels[:, 2].long().to(device, non_blocking=True)
@@ -1383,7 +1449,7 @@ def train_vae_age_site_staged(
                 site_pred = site_predictor(tract_data)
                 site_loss = site_criterion(site_pred, site_true)
 
-            if epoch == 0 and i < 3:  # Only for first few batches of first epoch
+            if epoch == 0 and i < 3:  
                 print(f"Site training debug - Batch {i}:")
                 print(f"  True site labels: {site_true.cpu().unique()}")
                 print(f"  Predicted site classes: {torch.argmax(site_pred, dim=1).cpu().unique()}")
@@ -1401,7 +1467,6 @@ def train_vae_age_site_staged(
             if (i + 1) % 10 == 0:
                 print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(train_data)} | Loss: {site_loss.item():.4f}", end="")
         
-        # Validation
         site_predictor.eval()
         val_site_loss = 0.0
         val_site_correct = 0
@@ -1427,7 +1492,6 @@ def train_vae_age_site_staged(
         avg_val_site_loss = val_site_loss / val_items
         avg_val_site_acc = (val_site_correct / val_items) * 100
         
-        # Store metrics
         site_train_loss_epoch.append(avg_train_site_loss)
         site_val_loss_epoch.append(avg_val_site_loss)
         site_train_acc_epoch.append(avg_train_site_acc)
@@ -1437,7 +1501,6 @@ def train_vae_age_site_staged(
         
         site_scheduler.step(avg_val_site_loss)
         
-        # Save best model
         if avg_val_site_loss < best_site_loss:
             best_site_loss = avg_val_site_loss
             best_site_state = site_predictor.state_dict()
@@ -1480,6 +1543,8 @@ def train_vae_age_site_staged(
     val_age_mae_epoch = []
     train_site_acc_epoch = []
     val_site_acc_epoch = []
+    train_age_r2_epoch = []  # Add R² tracking
+    val_age_r2_epoch = []    # Add R² tracking
     current_beta_epoch = []
     current_grl_alpha_epoch = []
     current_lr_epoch = []
@@ -1576,6 +1641,8 @@ def train_vae_age_site_staged(
         running_age_mae_sum = 0.0
         running_site_correct = 0.0
         train_items = 0
+        train_age_preds = []  # Add these for R² calculation
+        train_age_trues = []  # Add these for R² calculation
         
         for i, (x, labels) in enumerate(train_data):
             batch_size = x.size(0)
@@ -1613,6 +1680,11 @@ def train_vae_age_site_staged(
             running_age_loss += age_loss.item() * batch_size
             running_site_loss += site_loss.item() * batch_size
             running_age_mae_sum += age_loss.item() * batch_size  # L1 loss is MAE
+            
+            # Store age predictions and true values for R² calculation
+            train_age_preds.append(age_pred.detach())
+            train_age_trues.append(age_true.detach())
+            
             _, predicted_sites = torch.max(site_pred.data, 1)
             running_site_correct += (predicted_sites == site_true).sum().item()
 
@@ -1635,6 +1707,8 @@ def train_vae_age_site_staged(
         running_val_age_mae_sum = 0.0
         running_val_site_correct = 0.0
         val_items = 0
+        val_age_preds = []  # Add these for R² calculation
+        val_age_trues = []  # Add these for R² calculation
         
         with torch.no_grad():
             for x, labels in val_data:
@@ -1664,6 +1738,11 @@ def train_vae_age_site_staged(
                 running_val_age_loss += age_loss.item() * batch_size
                 running_val_site_loss += site_loss.item() * batch_size
                 running_val_age_mae_sum += age_loss.item() * batch_size
+                
+                # Store age predictions and true values for R² calculation
+                val_age_preds.append(age_pred)
+                val_age_trues.append(age_true)
+                
                 _, predicted_sites = torch.max(site_pred.data, 1)
                 running_val_site_correct += (predicted_sites == site_true).sum().item()
         
@@ -1676,6 +1755,11 @@ def train_vae_age_site_staged(
         avg_train_age_mae = running_age_mae_sum / train_items
         avg_train_site_acc = (running_site_correct / train_items) * 100
         
+        # Calculate R² for training age predictions
+        all_train_age_preds = torch.cat(train_age_preds)
+        all_train_age_trues = torch.cat(train_age_trues)
+        train_age_r2 = calculate_r2_score(all_train_age_trues, all_train_age_preds)
+        
         avg_val_loss = running_val_loss / val_items
         avg_val_recon_loss = running_val_recon_loss / val_items
         avg_val_kl_loss = running_val_kl_loss / val_items
@@ -1683,6 +1767,11 @@ def train_vae_age_site_staged(
         avg_val_site_loss = running_val_site_loss / val_items
         avg_val_age_mae = running_val_age_mae_sum / val_items
         avg_val_site_acc = (running_val_site_correct / val_items) * 100
+        
+        # Calculate R² for validation age predictions
+        all_val_age_preds = torch.cat(val_age_preds)
+        all_val_age_trues = torch.cat(val_age_trues)
+        val_age_r2 = calculate_r2_score(all_val_age_trues, all_val_age_preds)
         
         # Save metrics
         train_loss_epoch.append(avg_train_loss)
@@ -1692,6 +1781,7 @@ def train_vae_age_site_staged(
         train_site_loss_epoch.append(avg_train_site_loss)
         train_age_mae_epoch.append(avg_train_age_mae)
         train_site_acc_epoch.append(avg_train_site_acc)
+        train_age_r2_epoch.append(train_age_r2)  # Add R² to metrics
         
         val_loss_epoch.append(avg_val_loss)
         val_recon_loss_epoch.append(avg_val_recon_loss)
@@ -1700,6 +1790,7 @@ def train_vae_age_site_staged(
         val_site_loss_epoch.append(avg_val_site_loss)
         val_age_mae_epoch.append(avg_val_age_mae)
         val_site_acc_epoch.append(avg_val_site_acc)
+        val_age_r2_epoch.append(val_age_r2)  # Add R² to metrics
         
         # Create a temporary dict to easily access the metric value by key
         current_epoch_val_metrics = {
@@ -1717,7 +1808,7 @@ def train_vae_age_site_staged(
         # Print progress
         print(f"\nEpoch {epoch+1}/{epochs_stage2} | Train Loss: {avg_train_loss:.4f} | " +
               f"Val Loss: {avg_val_loss:.4f} | Val Age MAE: {avg_val_age_mae:.4f} | " +
-              f"Val Site Acc: {avg_val_site_acc:.2f}% | GRL Alpha: {current_grl_alpha:.2f}")
+              f"Val Age R²: {val_age_r2:.4f} | Val Site Acc: {avg_val_site_acc:.2f}% | GRL Alpha: {current_grl_alpha:.2f}")
         
         # Step scheduler
         combined_scheduler.step(current_val_metric)
@@ -1752,6 +1843,8 @@ def train_vae_age_site_staged(
         "val_age_mae_epoch": val_age_mae_epoch,
         "train_site_acc_epoch": train_site_acc_epoch,
         "val_site_acc_epoch": val_site_acc_epoch,
+        "train_age_r2_epoch": train_age_r2_epoch,  # Add R² metrics
+        "val_age_r2_epoch": val_age_r2_epoch,      # Add R² metrics
         "current_beta_epoch": current_beta_epoch,
         "current_grl_alpha_epoch": current_grl_alpha_epoch,
         "current_lr_epoch": current_lr_epoch,
