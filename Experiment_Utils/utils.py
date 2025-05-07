@@ -980,6 +980,7 @@ def grad_reverse(x, alpha=1.0):
 def calculate_r2_score(y_true, y_pred):
     """
     Calculate the coefficient of determination (R²) between true and predicted values.
+    R² = 1 - (Sum of Squared Residuals / Total Sum of Squares)
     
     Parameters
     ----------
@@ -1002,19 +1003,27 @@ def calculate_r2_score(y_true, y_pred):
         if len(y_true) == 0:  # If no valid data points remain
             return float('nan')
     
+    # Ensure tensors are flattened to 1D
+    y_true = y_true.reshape(-1)
+    y_pred = y_pred.reshape(-1)
+    
+    # Calculate mean of true values
     y_true_mean = torch.mean(y_true)
+    
+    # Total sum of squares (proportional to variance of true values)
     total_sum_squares = torch.sum((y_true - y_true_mean) ** 2)
+    
+    # Residual sum of squares (squared differences between predictions and true values)
     residual_sum_squares = torch.sum((y_true - y_pred) ** 2)
     
     if total_sum_squares == 0:
         return float('nan')  # Can't calculate R² if all true values are identical
         
-    r2 = 1 - (residual_sum_squares / total_sum_squares)
+    # Calculate R²
+    r2 = 1.0 - (residual_sum_squares / total_sum_squares)
     
-    # Clamp to prevent negative values (which can happen if predictions are worse than just predicting the mean)
-    r2 = max(0.0, r2.item())
-    
-    return r2
+    # Return as Python float
+    return r2.item()
 
 def train_vae_age_site_staged(
     vae_model,
