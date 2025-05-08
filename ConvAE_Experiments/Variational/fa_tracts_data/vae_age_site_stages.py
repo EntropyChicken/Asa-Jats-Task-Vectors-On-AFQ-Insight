@@ -34,7 +34,7 @@ try:
     print("DEBUG: Importing utility functions")
     sys.stdout.flush()
     from utils import select_device, kl_divergence_loss,prep_fa_flattned_data, prep_fa_flattened_remapped_data, train_vae_age_site_staged
-    from models import Conv1DVariationalAutoencoder_fa, AgePredictorCNN, SitePredictorCNN, CombinedVAE_Predictors, ImprovedAgePredictorCNN
+    from models import Conv1DVariationalAutoencoder_fa, AgePredictorCNN, SitePredictorCNN, CombinedVAE_Predictors, ImprovedAgePredictorCNN, SimpleAgePredictorCNN
     print("DEBUG: Successfully imported utility functions")
     sys.stdout.flush()
 except Exception as e:
@@ -138,7 +138,7 @@ try:
     age_dropout = 0.3
     site_dropout = 0.2
     w_recon = 1.0
-    w_kl = 0.1
+    w_kl = 0.001
     w_age = 15.0  # Higher weight for age prediction
     w_site = 5.0  # Higher weight for site adversarial training
     
@@ -153,15 +153,23 @@ try:
         # age_predictor = AgePredictorCNN(input_channels=input_channels, 
         #                                sequence_length=sequence_length, 
         #                                dropout=age_dropout)
-        age_predictor = ImprovedAgePredictorCNN(input_channels=input_channels, 
+        age_predictor = AgePredictorCNN(input_channels=input_channels, 
                                                sequence_length=sequence_length, 
                                                dropout=age_dropout)
                                        
-        site_predictor = SitePredictorCNN(num_sites=4, 
+        # Get the number of unique sites from the training data
+        unique_sites = set()
+        for _, labels in train_loader_raw:
+            unique_sites.update(labels[:, 2].tolist())
+        num_sites = len(unique_sites)
+        print(f"Detected {num_sites} unique site IDs in the data: {sorted(unique_sites)}")
+        
+        # Create the site predictor with the correct number of sites
+        site_predictor = SitePredictorCNN(num_sites=num_sites, 
                                          input_channels=input_channels, 
                                          sequence_length=sequence_length, 
                                          dropout=site_dropout)
-        print("DEBUG: Successfully created models")
+        print(f"DEBUG: Successfully created models (num_sites={num_sites})")
         sys.stdout.flush()
     except Exception as e:
         print(f"ERROR creating models: {str(e)}")
@@ -264,7 +272,7 @@ try:
         age_results = staged_results["age_predictor"]
         
         # Keys to convert for Age Predictor metrics
-        age_keys = ["train_loss_epoch", "val_loss_epoch", "current_lr_epoch"]
+        age_keys = ["train_loss_epoch", "val_loss_epoch", "train_r2_epoch", "val_r2_epoch", "current_lr_epoch"]
         
         age_processed = process_metrics(age_results, age_keys)
         
@@ -316,6 +324,7 @@ try:
             "train_site_loss_epoch", "val_site_loss_epoch", 
             "train_age_mae_epoch", "val_age_mae_epoch",
             "train_site_acc_epoch", "val_site_acc_epoch", 
+            "train_age_r2_epoch", "val_age_r2_epoch",
             "current_beta_epoch", "current_grl_alpha_epoch",
             "current_lr_epoch"
         ]
