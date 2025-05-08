@@ -371,6 +371,27 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
      # Define the site map {original_id: new_id}
      site_map = {0.0: 0.0, 1.0: 1.0, 3.0: 2.0, 4.0: 3.0}
      print(f"Using site map: {site_map}")
+     
+     # If we're omitting a site, we need to remap the site IDs to be consecutive
+     if omit_site_idx is not None:
+         print(f"Omitting site {omit_site_idx}, creating new site mapping...")
+         # Get all unique site IDs in the dataset
+         all_site_ids = set()
+         for loader in [train_loader_fa, test_loader_fa, val_loader_fa]:
+             for _, labels in loader:
+                 sites = labels[:, site_idx].unique().tolist()
+                 all_site_ids.update(sites)
+         
+         # Remove the omitted site and sort remaining sites
+         remaining_sites = sorted([s for s in all_site_ids if s != omit_site_idx])
+         print(f"Remaining site IDs after omitting {omit_site_idx}: {remaining_sites}")
+         
+         # Create a new mapping for consecutive IDs starting from 0
+         new_site_map = {site: idx for idx, site in enumerate(remaining_sites)}
+         print(f"New site mapping after omission: {new_site_map}")
+         
+         # Replace the original site map
+         site_map = new_site_map
  
      # 3. Define the modified AllTractsDataset with remapping
      class AllTractsRemappedDataset(Dataset):
@@ -1380,12 +1401,12 @@ def train_vae_age_site_staged(
             batch_size = x.size(0)
             tract_data = x.to(device, non_blocking=True)
             age_true = labels[:, 0].float().unsqueeze(1).to(device)
-            sex_data = labels[:, 1].float().to(device)  # Get sex data from labels
+            # sex_data = labels[:, 1].float().to(device)  # Get sex data from labels - REMOVED
             
             age_optimizer.zero_grad(set_to_none=True)
             
             with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                age_pred = age_predictor(tract_data, sex_data)  # Pass sex data to age predictor
+                age_pred = age_predictor(tract_data)  # Pass sex data to age predictor - REMOVED sex_data
                 age_loss = age_criterion(age_pred, age_true)
             
             age_loss.backward()
@@ -1439,10 +1460,10 @@ def train_vae_age_site_staged(
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
                 age_true = labels[:, 0].float().unsqueeze(1).to(device)
-                sex_data = labels[:, 1].float().to(device) 
+                # sex_data = labels[:, 1].float().to(device) - REMOVED
                 
                 with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                    age_pred = age_predictor(tract_data, sex_data)  
+                    age_pred = age_predictor(tract_data)  # REMOVED sex_data
                     age_loss = age_criterion(age_pred, age_true)
                 
                 val_items += batch_size
@@ -1744,13 +1765,13 @@ def train_vae_age_site_staged(
             batch_size = x.size(0)
             tract_data = x.to(device, non_blocking=True)
             age_true = labels[:, 0].float().unsqueeze(1).to(device)
-            sex_data = labels[:, 1].float().to(device)  # Get sex data
+            # sex_data = labels[:, 1].float().to(device)  # Get sex data - REMOVED
             site_true = labels[:, 2].long().to(device, non_blocking=True)
             
             combined_optimizer.zero_grad(set_to_none=True)
             
             with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, sex=sex_data, grl_alpha=current_grl_alpha)
+                x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha) # REMOVED sex=sex_data
                 
                 recon_loss = recon_criterion(x_hat, tract_data)
                 kl_loss = kl_divergence_loss(mean, logvar) / batch_size
@@ -1811,11 +1832,11 @@ def train_vae_age_site_staged(
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
                 age_true = labels[:, 0].float().unsqueeze(1).to(device)
-                sex_data = labels[:, 1].float().to(device)  # Get sex data
+                # sex_data = labels[:, 1].float().to(device)  # Get sex data - REMOVED
                 site_true = labels[:, 2].long().to(device, non_blocking=True)
 
                 with torch.cuda.amp.autocast(enabled=(device == "cuda")):
-                    x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, sex=sex_data, grl_alpha=current_grl_alpha)
+                    x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha) # REMOVED sex=sex_data
                     
                     recon_loss = recon_criterion(x_hat, tract_data)
                     kl_loss = kl_divergence_loss(mean, logvar) / batch_size

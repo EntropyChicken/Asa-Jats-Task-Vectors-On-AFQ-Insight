@@ -161,8 +161,8 @@ class AgePredictorCNN(nn.Module):
         _conv_output_shape = self._get_conv_output_shape(_dummy_input)
         flat_size = _conv_output_shape[1] * _conv_output_shape[2]
 
-        # Add an extra input for sex in the first fully connected layer
-        self.fc1 = nn.Linear(flat_size + 1, 64)  # +1 for sex feature
+        # Remove the extra input for sex in the first fully connected layer
+        self.fc1 = nn.Linear(flat_size, 64)  # Removed +1 for sex feature
         self.fc_out = nn.Linear(64, 1)
 
     def _get_conv_output_shape(self, x):
@@ -171,7 +171,7 @@ class AgePredictorCNN(nn.Module):
         x = self.relu(self.bn3(self.conv3(x)))
         return x.shape
 
-    def forward(self, x, sex=None):
+    def forward(self, x): # Removed sex=None from arguments
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.dropout(x)
         x = self.relu(self.bn2(self.conv2(x)))
@@ -181,16 +181,7 @@ class AgePredictorCNN(nn.Module):
 
         x = self.flatten(x)
         
-        # Concatenate sex information if provided
-        if sex is not None:
-            # Ensure sex has the right shape [batch_size, 1]
-            if len(sex.shape) == 1:
-                sex = sex.unsqueeze(1)
-            x = torch.cat([x, sex], dim=1)
-        else:
-            # If sex not provided, add a zero column as placeholder
-            zeros = torch.zeros(x.size(0), 1, device=x.device)
-            x = torch.cat([x, zeros], dim=1)
+        # Removed concatenation of sex information
             
         x = self.relu(self.fc1(x))
         x = self.dropout(x)
@@ -238,9 +229,6 @@ class SitePredictorCNN(nn.Module):
         site_pred = self.fc_out(x)
         return site_pred
 
-
-# --- Combined Model ---
-
 try:
     from .utils import grad_reverse
 except ImportError:
@@ -261,12 +249,11 @@ class CombinedVAE_Predictors(nn.Module):
 
     def forward(self, x, sex=None, grl_alpha=1.0):
         x_hat, mean, logvar = self.vae(x)
-        age_pred = self.age_predictor(x_hat, sex)
+        age_pred = self.age_predictor(x_hat)
         x_hat_reversed = grad_reverse(x_hat, grl_alpha)
         site_pred = self.site_predictor(x_hat_reversed)
         return x_hat, mean, logvar, age_pred, site_pred
 
-# Helper components for ImprovedAgePredictorCNN
 class ResidualBlock(nn.Module):
     def __init__(self, channels):
         super().__init__()
@@ -279,7 +266,7 @@ class ResidualBlock(nn.Module):
         residual = x
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
-        out += residual  # Skip connection
+        out += residual
         return F.relu(out)
 
 class SelfAttention1D(nn.Module):
@@ -304,7 +291,6 @@ class SelfAttention1D(nn.Module):
 class MultiScaleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        # Ensure divisibility by 3
         each_channel = out_channels // 3
         remainder = out_channels - (each_channel * 3)
         
@@ -319,53 +305,43 @@ class ImprovedAgePredictorCNN(nn.Module):
     def __init__(self, input_channels=1, sequence_length=50, dropout=0.3):
         super().__init__()
         
-        # Initial convolution
         self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=5, stride=1, padding=2)
         self.bn1 = nn.BatchNorm1d(32)
         
-        # Multi-scale processing
-        self.multi_scale1 = MultiScaleConv(32, 63)  # Will give 63 channels (21*3)
+        self.multi_scale1 = MultiScaleConv(32, 63) 
         self.bn_ms1 = nn.BatchNorm1d(63)
         
-        # Residual blocks
         self.res1 = ResidualBlock(63)
         self.res2 = ResidualBlock(63)
         
-        # Attention mechanism
         self.attention = SelfAttention1D(63)
         
-        # Deeper processing
         self.conv2 = nn.Conv1d(63, 128, kernel_size=3, stride=2, padding=1)
         self.bn2 = nn.BatchNorm1d(128)
         
-        # Another residual block
         self.res3 = ResidualBlock(128)
         
         self.flatten = nn.Flatten()
         self.dropout = nn.Dropout(dropout)
         self.relu = nn.ReLU()
         
-        # Calculate final conv output size
         _dummy_input = torch.randn(1, input_channels, sequence_length)
         _conv_output_shape = self._get_conv_output_shape(_dummy_input)
         flat_size = _conv_output_shape[1] * _conv_output_shape[2]
         
-        # Sex integration
         self.sex_embedding = nn.Sequential(
             nn.Linear(1, 16),
             nn.ReLU(),
             nn.Linear(16, 32)
         )
         
-        # FC layers with more capacity
-        self.fc1 = nn.Linear(flat_size + 32, 256)  # +32 for sex embedding
+        self.fc1 = nn.Linear(flat_size + 32, 256)  
         self.bn_fc1 = nn.BatchNorm1d(256)
         self.fc2 = nn.Linear(256, 128)
         self.bn_fc2 = nn.BatchNorm1d(128)
         self.fc3 = nn.Linear(128, 64)
         self.bn_fc3 = nn.BatchNorm1d(64)
         
-        # Output layer
         self.fc_out = nn.Linear(64, 1)
     
     def _get_conv_output_shape(self, x):
@@ -379,7 +355,6 @@ class ImprovedAgePredictorCNN(nn.Module):
         return x.shape
     
     def forward(self, x, sex=None):
-        # Process tract data
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.dropout(x)
         
@@ -396,17 +371,13 @@ class ImprovedAgePredictorCNN(nn.Module):
         x = self.res3(x)
         x = self.flatten(x)
         
-        # Process sex data
         if sex is not None:
-            # Ensure sex has the right shape [batch_size, 1]
             if len(sex.shape) == 1:
                 sex = sex.unsqueeze(1)
             sex_features = self.sex_embedding(sex)
         else:
-            # If sex not provided, add zero features
             sex_features = torch.zeros(x.size(0), 32, device=x.device)
         
-        # Combine features
         combined = torch.cat([x, sex_features], dim=1)
         
         combined = self.relu(self.bn_fc1(self.fc1(combined)))
@@ -418,7 +389,60 @@ class ImprovedAgePredictorCNN(nn.Module):
         combined = self.relu(self.bn_fc3(self.fc3(combined)))
         combined = self.dropout(combined)
         
-        # Generate output
         age_pred = self.fc_out(combined)
+        
+        return age_pred
+
+class SimpleAgePredictorCNN(nn.Module):
+    """
+    A simpler age predictor model that may be more robust for our task.
+    """
+    def __init__(self, input_channels=1, sequence_length=50, dropout=0.2):
+        super().__init__()
+        # Fewer layers and simpler architecture
+        self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        
+        self.flatten = nn.Flatten()
+        self.dropout = nn.Dropout(dropout)
+        self.relu = nn.ReLU()
+        
+        # Calculate output size after convolutions
+        _dummy_input = torch.randn(1, input_channels, sequence_length)
+        _conv_output = self._get_conv_output_shape(_dummy_input)
+        flat_size = _conv_output[1] * _conv_output[2]
+        
+        # Simpler fully connected layers
+        self.fc1 = nn.Linear(flat_size + 1, 64)  # +1 for sex feature
+        self.fc2 = nn.Linear(64, 32)
+        self.fc_out = nn.Linear(32, 1)
+    
+    def _get_conv_output_shape(self, x):
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        return x.shape
+    
+    def forward(self, x, sex=None):
+        x = self.relu(self.conv1(x))
+        x = self.dropout(x)
+        x = self.relu(self.conv2(x))
+        x = self.dropout(x)
+        
+        x = self.flatten(x)
+        
+        # Concatenate sex information
+        if sex is not None:
+            if len(sex.shape) == 1:
+                sex = sex.unsqueeze(1)
+            x = torch.cat([x, sex], dim=1)
+        else:
+            zeros = torch.zeros(x.size(0), 1, device=x.device)
+            x = torch.cat([x, zeros], dim=1)
+        
+        x = self.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.relu(self.fc2(x))
+        x = self.dropout(x)
+        age_pred = self.fc_out(x)
         
         return age_pred
