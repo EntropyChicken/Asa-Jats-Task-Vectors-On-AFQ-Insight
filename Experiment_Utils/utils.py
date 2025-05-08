@@ -348,7 +348,7 @@ def train_variational_autoencoder_age_site(
  
      return results
  
-def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_site_id', age_col_name='age'):
+def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_site_id', age_col_name='age', omit_site_idx=None):
      # 1. Prepare FA-only dataset first (reuse existing logic)
      # Assuming target_labels="dki_fa" is appropriate for selecting FA features
      torch_dataset_fa, train_loader_fa, test_loader_fa, val_loader_fa = prep_fa_dataset(
@@ -374,7 +374,7 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
  
      # 3. Define the modified AllTractsDataset with remapping
      class AllTractsRemappedDataset(Dataset):
-         def __init__(self, original_fa_dataset, age_idx, site_idx, sex_idx, site_map):
+         def __init__(self, original_fa_dataset, age_idx, site_idx, sex_idx, site_map, omit_site_idx=None):
              self.original_fa_dataset = original_fa_dataset # This is the FA-only TensorDataset
              self.sample_count = len(original_fa_dataset)
              # Assuming original_fa_dataset[0][0] gives fa_tract data [num_tracts, num_nodes]
@@ -384,17 +384,40 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
              self.site_idx = site_idx
              self.sex_idx = sex_idx
              self.site_map = site_map
+             self.omit_site_idx = omit_site_idx
+             
+             # Filter out samples from the omitted site
+             if omit_site_idx is not None:
+                 self.valid_indices = []
+                 omitted_count = 0
+                 total_count = 0
+                 for i in range(self.sample_count):
+                     _, original_y = original_fa_dataset[i]
+                     original_site = original_y[self.site_idx].item()
+                     total_count += 1
+                     if original_site != omit_site_idx:
+                         self.valid_indices.extend([i * self.tract_count + j for j in range(self.tract_count)])
+                     else:
+                         omitted_count += 1
+                 print(f"Filtering: Omitted site {omit_site_idx}: removed {omitted_count} of {total_count} samples ({(omitted_count/total_count)*100:.1f}%)")
+                 print(f"Remaining samples after filtering: {len(self.valid_indices) // self.tract_count}")
+             else:
+                 self.valid_indices = list(range(self.sample_count * self.tract_count))
+                 
              if not isinstance(original_fa_dataset, torch.utils.data.Dataset):
                   raise TypeError("original_fa_dataset must be an instance of torch.utils.data.Dataset")
  
          def __len__(self):
-             # Each sample yields tract_count individual items
-             return self.sample_count * self.tract_count
+             # Return the number of valid samples after filtering
+             return len(self.valid_indices)
  
          def __getitem__(self, idx):
+             # Get the actual index from valid_indices
+             actual_idx = self.valid_indices[idx]
+             
              # Map flattened index back to original sample and tract
-             sample_idx = idx // self.tract_count
-             tract_idx = idx % self.tract_count
+             sample_idx = actual_idx // self.tract_count
+             tract_idx = actual_idx % self.tract_count
  
              # Get data from the original FA-only dataset
              # base_dataset yields (fa_data, original_y)
@@ -421,9 +444,9 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
  
      # 4. Create instances of the new Dataset using the base FA datasets
      print("Creating remapped datasets...")
-     all_tracts_train_dataset = AllTractsRemappedDataset(train_loader_fa.dataset, age_idx, site_idx, sex_idx, site_map)
-     all_tracts_test_dataset = AllTractsRemappedDataset(test_loader_fa.dataset, age_idx, site_idx, sex_idx, site_map)
-     all_tracts_val_dataset = AllTractsRemappedDataset(val_loader_fa.dataset, age_idx, site_idx, sex_idx, site_map)
+     all_tracts_train_dataset = AllTractsRemappedDataset(train_loader_fa.dataset, age_idx, site_idx, sex_idx, site_map, omit_site_idx)
+     all_tracts_test_dataset = AllTractsRemappedDataset(test_loader_fa.dataset, age_idx, site_idx, sex_idx, site_map, omit_site_idx)
+     all_tracts_val_dataset = AllTractsRemappedDataset(val_loader_fa.dataset, age_idx, site_idx, sex_idx, site_map, omit_site_idx)
  
      # 5. Create the final DataLoaders
      print("Creating final DataLoaders...")
@@ -977,7 +1000,7 @@ def grad_reverse(x, alpha=1.0):
     """Helper function to apply the Gradient Reversal Layer."""
     return GradReverse.apply(x, alpha)
 
-def calculate_r2_score(y_true, y_pred):
+def calculate_r2_score(y_true, y_pred, verbose=False):
     """
     Calculate the coefficient of determination (R²) between true and predicted values.
     R² = 1 - (Sum of Squared Residuals / Total Sum of Squares)
@@ -988,6 +1011,8 @@ def calculate_r2_score(y_true, y_pred):
         True values
     y_pred : torch.Tensor
         Predicted values
+    verbose : bool
+        If True, prints diagnostic information
         
     Returns
     -------
@@ -1016,7 +1041,30 @@ def calculate_r2_score(y_true, y_pred):
     # Residual sum of squares (squared differences between predictions and true values)
     residual_sum_squares = torch.sum((y_true - y_pred) ** 2)
     
+    if verbose:
+        print(f"\nR² calculation diagnostics:")
+        print(f"  y_true shape: {y_true.shape}")
+        print(f"  y_pred shape: {y_pred.shape}")
+        print(f"  y_true mean: {y_true_mean.item():.4f}")
+        print(f"  Total Sum of Squares: {total_sum_squares.item():.4f}")
+        print(f"  Residual Sum of Squares: {residual_sum_squares.item():.4f}")
+        
+        if residual_sum_squares > total_sum_squares:
+            print(f"  WARNING: RSS > TSS, indicating model performs worse than mean prediction!")
+        
+        # Calculate the difference between true values and predictions for a few samples
+        sample_size = min(5, len(y_true))
+        sample_indices = torch.randperm(len(y_true))[:sample_size]
+        print(f"  Sample comparisons (true vs. pred):")
+        for i in sample_indices:
+            true_val = y_true[i].item()
+            pred_val = y_pred[i].item()
+            diff = true_val - pred_val
+            print(f"    {true_val:.2f} vs {pred_val:.2f} (diff: {diff:.2f})")
+    
     if total_sum_squares == 0:
+        if verbose:
+            print("  ERROR: Total Sum of Squares is zero - all true values are identical!")
         return float('nan')  # Can't calculate R² if all true values are identical
         
     # Calculate R²
@@ -1357,7 +1405,27 @@ def train_vae_age_site_staged(
         # Calculate R² for training set
         all_train_preds = torch.cat(train_predictions)
         all_train_targets = torch.cat(train_targets)
-        train_r2 = calculate_r2_score(all_train_targets, all_train_preds)
+        
+        # Add diagnostic information
+        with torch.no_grad():
+            train_pred_mean = all_train_preds.mean().item()
+            train_pred_std = all_train_preds.std().item() 
+            train_true_mean = all_train_targets.mean().item()
+            train_true_std = all_train_targets.std().item()
+            train_correlation = torch.corrcoef(torch.stack([all_train_preds.flatten(), all_train_targets.flatten()]))[0,1].item()
+            
+            print(f"\nDiagnostics for training:")
+            print(f"  Predictions: mean={train_pred_mean:.2f}, std={train_pred_std:.2f}, min={all_train_preds.min().item():.2f}, max={all_train_preds.max().item():.2f}")
+            print(f"  True values: mean={train_true_mean:.2f}, std={train_true_std:.2f}, min={all_train_targets.min().item():.2f}, max={all_train_targets.max().item():.2f}")
+            print(f"  Correlation: {train_correlation:.4f}")
+            
+            # If there's almost no variation in predictions, that's a problem
+            if train_pred_std < 0.1 * train_true_std:
+                print(f"  WARNING: Predictions have very low variation compared to true values!")
+        
+        # Use verbose mode in early epochs
+        verbose = (epoch < 5) 
+        train_r2 = calculate_r2_score(all_train_targets, all_train_preds, verbose=verbose)
         
         # Validation
         age_predictor.eval()
@@ -1387,7 +1455,26 @@ def train_vae_age_site_staged(
         # Calculate R² for validation set
         all_val_preds = torch.cat(val_predictions)
         all_val_targets = torch.cat(val_targets)
-        val_r2 = calculate_r2_score(all_val_targets, all_val_preds)
+        
+        # Add diagnostic information
+        with torch.no_grad():
+            val_pred_mean = all_val_preds.mean().item()
+            val_pred_std = all_val_preds.std().item() 
+            val_true_mean = all_val_targets.mean().item()
+            val_true_std = all_val_targets.std().item()
+            val_correlation = torch.corrcoef(torch.stack([all_val_preds.flatten(), all_val_targets.flatten()]))[0,1].item()
+            
+            print(f"\nDiagnostics for validation:")
+            print(f"  Predictions: mean={val_pred_mean:.2f}, std={val_pred_std:.2f}, min={all_val_preds.min().item():.2f}, max={all_val_preds.max().item():.2f}")
+            print(f"  True values: mean={val_true_mean:.2f}, std={val_true_std:.2f}, min={all_val_targets.min().item():.2f}, max={all_val_targets.max().item():.2f}")
+            print(f"  Correlation: {val_correlation:.4f}")
+            
+            # If there's almost no variation in predictions, that's a problem
+            if val_pred_std < 0.1 * val_true_std:
+                print(f"  WARNING: Predictions have very low variation compared to true values!")
+        
+        # Use verbose mode in early epochs
+        val_r2 = calculate_r2_score(all_val_targets, all_val_preds, verbose=verbose)
         
         avg_train_age_loss = train_age_loss / train_items
         avg_val_age_loss = val_age_loss / val_items
@@ -1767,7 +1854,27 @@ def train_vae_age_site_staged(
         # Calculate R² for training age predictions
         all_train_age_preds = torch.cat(train_age_preds)
         all_train_age_trues = torch.cat(train_age_trues)
-        train_age_r2 = calculate_r2_score(all_train_age_trues, all_train_age_preds)
+        
+        # Add diagnostic information
+        with torch.no_grad():
+            train_pred_mean = all_train_age_preds.mean().item()
+            train_pred_std = all_train_age_preds.std().item() 
+            train_true_mean = all_train_age_trues.mean().item()
+            train_true_std = all_train_age_trues.std().item()
+            train_correlation = torch.corrcoef(torch.stack([all_train_age_preds.flatten(), all_train_age_trues.flatten()]))[0,1].item()
+            
+            print(f"\nCombined model - Diagnostics for training age prediction:")
+            print(f"  Predictions: mean={train_pred_mean:.2f}, std={train_pred_std:.2f}, min={all_train_age_preds.min().item():.2f}, max={all_train_age_preds.max().item():.2f}")
+            print(f"  True values: mean={train_true_mean:.2f}, std={train_true_std:.2f}, min={all_train_age_trues.min().item():.2f}, max={all_train_age_trues.max().item():.2f}")
+            print(f"  Correlation: {train_correlation:.4f}")
+            
+            # If there's almost no variation in predictions, that's a problem
+            if train_pred_std < 0.1 * train_true_std:
+                print(f"  WARNING: Predictions have very low variation compared to true values!")
+        
+        # Use verbose mode in early epochs
+        verbose = (epoch < 5)
+        train_age_r2 = calculate_r2_score(all_train_age_trues, all_train_age_preds, verbose=verbose)
         
         avg_val_loss = running_val_loss / val_items
         avg_val_recon_loss = running_val_recon_loss / val_items
@@ -1780,7 +1887,26 @@ def train_vae_age_site_staged(
         # Calculate R² for validation age predictions
         all_val_age_preds = torch.cat(val_age_preds)
         all_val_age_trues = torch.cat(val_age_trues)
-        val_age_r2 = calculate_r2_score(all_val_age_trues, all_val_age_preds)
+        
+        # Add diagnostic information
+        with torch.no_grad():
+            val_pred_mean = all_val_age_preds.mean().item()
+            val_pred_std = all_val_age_preds.std().item() 
+            val_true_mean = all_val_age_trues.mean().item()
+            val_true_std = all_val_age_trues.std().item()
+            val_correlation = torch.corrcoef(torch.stack([all_val_age_preds.flatten(), all_val_age_trues.flatten()]))[0,1].item()
+            
+            print(f"\nCombined model - Diagnostics for validation age prediction:")
+            print(f"  Predictions: mean={val_pred_mean:.2f}, std={val_pred_std:.2f}, min={all_val_age_preds.min().item():.2f}, max={all_val_age_preds.max().item():.2f}")
+            print(f"  True values: mean={val_true_mean:.2f}, std={val_true_std:.2f}, min={all_val_age_trues.min().item():.2f}, max={all_val_age_trues.max().item():.2f}")
+            print(f"  Correlation: {val_correlation:.4f}")
+            
+            # If there's almost no variation in predictions, that's a problem
+            if val_pred_std < 0.1 * val_true_std:
+                print(f"  WARNING: Predictions have very low variation compared to true values!")
+        
+        # Use verbose mode in early epochs
+        val_age_r2 = calculate_r2_score(all_val_age_trues, all_val_age_preds, verbose=verbose)
         
         # Save metrics
         train_loss_epoch.append(avg_train_loss)
