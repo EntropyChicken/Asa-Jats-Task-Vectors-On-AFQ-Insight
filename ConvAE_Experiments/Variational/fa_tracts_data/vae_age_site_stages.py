@@ -135,7 +135,7 @@ try:
     # Set parameters for the staged experiment
     latent_dim = 64  # Choose the larger latent dim
     dropout = 0.0  # VAE dropout
-    age_dropout = 0.3
+    age_dropout = 0.1
     site_dropout = 0.2
     w_recon = 1.0
     w_kl = 0.001
@@ -203,8 +203,8 @@ try:
             w_kl=w_kl,
             w_age=w_age,
             w_site=w_site,
-            kl_annealing_start_epoch=200,
-            kl_annealing_duration=200,
+            kl_annealing_start_epoch=250,
+            kl_annealing_duration=250,
             kl_annealing_start=0.001,
             grl_alpha_start=0.0,
             grl_alpha_end=7.5,
