@@ -162,7 +162,7 @@ class AgePredictorCNN(nn.Module):
         flat_size = _conv_output_shape[1] * _conv_output_shape[2]
 
         # Remove the extra input for sex in the first fully connected layer
-        self.fc1 = nn.Linear(flat_size, 64)  # Removed +1 for sex feature
+        self.fc1 = nn.Linear(flat_size, 64) 
         self.fc_out = nn.Linear(64, 1)
 
     def _get_conv_output_shape(self, x):
@@ -172,20 +172,28 @@ class AgePredictorCNN(nn.Module):
         return x.shape
 
     def forward(self, x): # Removed sex=None from arguments
-        x = self.relu(self.bn1(self.conv1(x)))
+        # Input shape: [1, 50]
+        # Need to reshape to [1, 1, 50] for conv1d (batch_size, channels, sequence_length)
+        if x.dim() == 2:
+            x = x.unsqueeze(1)  # Shape becomes [1, 1, 50]
+            
+        # Conv1: kernel=5, stride=2, padding=2
+        x = self.relu(self.bn1(self.conv1(x)))  # Shape: [1, 32, 25]
         x = self.dropout(x)
-        x = self.relu(self.bn2(self.conv2(x)))
+        
+        # Conv2: kernel=3, stride=2, padding=1
+        x = self.relu(self.bn2(self.conv2(x)))  # Shape: [1, 64, 13]
         x = self.dropout(x)
-        x = self.relu(self.bn3(self.conv3(x)))
+        
+        # Conv3: kernel=3, stride=2, padding=1
+        x = self.relu(self.bn3(self.conv3(x)))  # Shape: [1, 128, 7]
         x = self.dropout(x)
 
-        x = self.flatten(x)
+        x = self.flatten(x)  # Shape: [1, 128*7] = [1, 896]
         
-        # Removed concatenation of sex information
-            
-        x = self.relu(self.fc1(x))
+        x = self.relu(self.fc1(x))  # Shape: [1, 64]
         x = self.dropout(x)
-        age_pred = self.fc_out(x)
+        age_pred = self.fc_out(x)  # Shape: [1, 1]
         return age_pred
 
 class SitePredictorCNN(nn.Module):
