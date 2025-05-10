@@ -148,7 +148,7 @@ try:
 
     # Create models
     try:
-        vae = Conv1DVariationalAutoencoder_fa(latent_dims=latent_dim, dropout=dropout)
+        vae = Conv1DVariationalAutoencoder_fa(latent_dims=latent_dim, dropout=dropout, input_length=sequence_length)
         
         # AgePredictorCNN now accepts sex information to improve age prediction
         # age_predictor = AgePredictorCNN(input_channels=input_channels, 
