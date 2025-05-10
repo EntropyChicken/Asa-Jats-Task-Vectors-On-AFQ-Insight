@@ -118,7 +118,8 @@ try:
         print("Warning: Could not get sample batch to determine input shape.")
         # Set defaults or exit if necessary
         input_channels = 1 # Set manually if needed
-        sequence_length = 50 # Set manually if needed (MUST MATCH VAE DECODER OUTPUT)
+        # sequence_length = 50 # Set manually if needed (MUST MATCH VAE DECODER OUTPUT)
+        sequence_length = 100 # this change should allow accepting the fa and md data
         print(f"Using default/manual input shape: channels={input_channels}, sequence_length={sequence_length}")
     sys.stdout.flush()
 
@@ -204,8 +205,8 @@ try:
             w_age=w_age,
             w_site=w_site,
             kl_annealing_start_epoch=250,
-            kl_annealing_duration=250,
-            kl_annealing_start=0.001,
+            kl_annealing_duration=500,
+            kl_annealing_start=0.0001,
             grl_alpha_start=0.0,
             grl_alpha_end=7.5,
             grl_alpha_epochs=300,

@@ -352,7 +352,7 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
      # 1. Prepare FA-only dataset first (reuse existing logic)
      # Assuming target_labels="dki_fa" is appropriate for selecting FA features
      torch_dataset_fa, train_loader_fa, test_loader_fa, val_loader_fa = prep_fa_dataset(
-         dataset, target_labels="dki_fa", batch_size=batch_size
+         dataset, target_labels=["dki_fa", "dki_md"], batch_size=batch_size
      )
 
      print(train_loader_fa.dataset[0][1][2])
