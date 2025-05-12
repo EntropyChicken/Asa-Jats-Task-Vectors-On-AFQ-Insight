@@ -6,7 +6,8 @@ class Conv1DVariationalEncoder_fa(nn.Module):
     def __init__(self, latent_dims=20, dropout=0.2, input_length=50):
         super().__init__()
         self.conv1 = nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2)
-        self.conv2 = nn.Conv1d(16, 32, kernel_size=4, stride=2, padding=2)
+        self.conv2_50 = nn.Conv1d(16, 32, kernel_size=4, stride=2, padding=2)
+        self.conv2_100 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
         self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
         
         # Calculate the output size dynamically
@@ -30,7 +31,7 @@ class Conv1DVariationalEncoder_fa(nn.Module):
     def forward(self, x):
         x = F.relu(self.conv1(x))
         x = self.dropout(x)
-        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv2_100(x))
         x = self.dropout(x)
         x = F.relu(self.conv3(x))
         x = self.dropout(x)
@@ -51,7 +52,8 @@ class Conv1DVariationalDecoder_fa(nn.Module):
         
         self.fc = nn.Linear(latent_dims, self.flattened_size)
         self.deconv2 = nn.ConvTranspose1d(self.conv_channels, 32, kernel_size=5, stride=2, padding=2, output_padding=0)
-        self.deconv3 = nn.ConvTranspose1d(32, 16, kernel_size=4, stride=2, padding=2, output_padding=1)
+        self.deconv3_100 = nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.deconv3_50 = nn.ConvTranspose1d(32, 16, kernel_size=4, stride=2, padding=2, output_padding=1)
         self.deconv4 = nn.ConvTranspose1d(16, 1, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.relu = nn.ReLU()
         
@@ -60,7 +62,7 @@ class Conv1DVariationalDecoder_fa(nn.Module):
         x = self.fc(x)
         x = x.view(batch_size, self.conv_channels, self.conv_length)
         x = F.relu(self.deconv2(x))
-        x = F.relu(self.deconv3(x))
+        x = F.relu(self.deconv3_100(x))
         x = self.deconv4(x)
         return x
 
