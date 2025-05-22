@@ -333,7 +333,7 @@ try:
     w_recon = 5.0
     w_kl = 0.0001
     w_age = 15.0  # Higher weight for age prediction
-    w_site = 1.0  # Higher weight for site adversarial training
+    w_site = 0.5  # Higher weight for site adversarial training
     
     print("DEBUG: Creating models")
     sys.stdout.flush()
@@ -410,7 +410,7 @@ try:
             grl_alpha_epochs=300,
             save_dir=staged_save_directory,
             val_metric_to_monitor="val_age_mae",
-            save_predictions_interval=50  # Save site predictions every 50 epochs
+            save_predictions_interval=50  
         )
         print("DEBUG: Staged training completed successfully")
         sys.stdout.flush()

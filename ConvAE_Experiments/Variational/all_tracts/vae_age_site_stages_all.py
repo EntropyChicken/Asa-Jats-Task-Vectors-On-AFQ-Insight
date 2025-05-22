@@ -19,6 +19,181 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import os
 import sys
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+# Function to create and save confusion matrices
+def create_confusion_matrices(save_dir, site_names=None):
+    """
+    Create and save confusion matrices from saved site prediction data.
+    
+    Parameters
+    ----------
+    save_dir : str
+        Directory where site prediction data is saved
+    site_names : list, optional
+        List of site names for axis labels
+    """
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+    
+    # Define directory with saved predictions
+    data_dir = os.path.join(save_dir, 'site_predictions')
+    
+    if not os.path.exists(data_dir):
+        print(f"No site prediction data found in {data_dir}")
+        return
+        
+    # Create directory for confusion matrix plots
+    plot_dir = os.path.join(save_dir, 'confusion_matrices')
+    os.makedirs(plot_dir, exist_ok=True)
+    
+    # Get all saved files
+    true_files = sorted([f for f in os.listdir(data_dir) if f.endswith('.npy') and 'true_sites' in f])
+    
+    # Group files by prefix and epoch
+    file_groups = {}
+    for f in true_files:
+        # Extract prefix and epoch from filename
+        parts = f.split('_')
+        prefix = parts[0]
+        epoch = int(parts[-1].replace('.npy', ''))
+        
+        # Add to groups
+        if (prefix, epoch) not in file_groups:
+            file_groups[(prefix, epoch)] = {}
+        
+        file_groups[(prefix, epoch)]['true'] = os.path.join(data_dir, f)
+        # Find corresponding predictions file
+        pred_file = f.replace('true_sites', 'pred_sites')
+        if os.path.exists(os.path.join(data_dir, pred_file)):
+            file_groups[(prefix, epoch)]['pred'] = os.path.join(data_dir, pred_file)
+    
+    print(f"Found {len(file_groups)} pairs of true/predicted site data")
+    
+    # Create confusion matrices
+    for (prefix, epoch), files in file_groups.items():
+        if 'true' in files and 'pred' in files:
+            # Load data
+            true_sites = np.load(files['true'])
+            pred_sites = np.load(files['pred'])
+            
+            # Compute confusion matrix
+            cm = confusion_matrix(true_sites, pred_sites, normalize='true')
+            
+            # Create display with labels if provided
+            if site_names is not None:
+                labels = site_names
+            else:
+                num_sites = len(np.unique(np.concatenate([true_sites, pred_sites])))
+                labels = [f"Site {i}" for i in range(num_sites)]
+                
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
+            
+            # Create figure and plot
+            fig, ax = plt.subplots(figsize=(10, 8))
+            disp.plot(ax=ax, cmap='Blues', values_format='.2f')
+            plt.title(f'{prefix.capitalize()} Confusion Matrix - Epoch {epoch}')
+            
+            # Save figure
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f'{prefix}_confusion_matrix_epoch_{epoch}.png'))
+            plt.close()
+            
+            print(f"Created confusion matrix for {prefix} data at epoch {epoch}")
+            
+            # Also save a CSV of the confusion matrix for detailed analysis
+            df = pd.DataFrame(cm, index=labels, columns=labels)
+            df.to_csv(os.path.join(plot_dir, f'{prefix}_confusion_matrix_epoch_{epoch}.csv'))
+            
+    # Create a final summary visualization of confusion matrices over time
+    create_confusion_matrix_summary(plot_dir, file_groups)
+    
+def create_confusion_matrix_summary(plot_dir, file_groups):
+    """Create a summary visualization showing how confusion matrices evolve over time."""
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import confusion_matrix
+    
+    # Only process validation data for the summary
+    val_epochs = sorted([epoch for prefix, epoch in file_groups.keys() if prefix == 'val'])
+    
+    if len(val_epochs) <= 1:
+        print("Not enough epochs for time series visualization")
+        return
+        
+    # Calculate metrics over time
+    epochs = []
+    accuracies = []
+    chance_divergences = []  # How far from chance (1/num_classes)
+    
+    for epoch in val_epochs:
+        if ('val', epoch) in file_groups:
+            files = file_groups[('val', epoch)]
+            
+            # Load data
+            true_sites = np.load(files['true'])
+            pred_sites = np.load(files['pred'])
+            
+            # Calculate metrics
+            cm = confusion_matrix(true_sites, pred_sites, normalize='true')
+            accuracy = np.trace(cm) / np.sum(cm)
+            
+            # Chance level is 1/num_classes
+            num_classes = cm.shape[0]
+            chance_level = 1.0 / num_classes
+            
+            # Calculate divergence from chance (positive: better than chance, negative: worse than chance)
+            chance_divergence = accuracy - chance_level
+            
+            epochs.append(epoch)
+            accuracies.append(accuracy)
+            chance_divergences.append(chance_divergence)
+    
+    # Create the plot
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    
+    color = 'tab:blue'
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Accuracy', color=color)
+    ax1.plot(epochs, accuracies, color=color, marker='o', label='Accuracy')
+    ax1.tick_params(axis='y', labelcolor=color)
+    
+    # Add horizontal line for chance level
+    chance_level = 1.0 / num_classes
+    ax1.axhline(y=chance_level, color='gray', linestyle='--', label=f'Chance Level ({chance_level:.2f})')
+    
+    # Add second axis for divergence
+    ax2 = ax1.twinx()
+    color = 'tab:red'
+    ax2.set_ylabel('Divergence from Chance', color=color)
+    ax2.plot(epochs, chance_divergences, color=color, marker='x', label='Divergence from Chance')
+    ax2.tick_params(axis='y', labelcolor=color)
+    
+    # Add horizontal line at zero divergence
+    ax2.axhline(y=0, color='lightgray', linestyle=':')
+    
+    # Add combined legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
+    
+    plt.title('Site Classification Performance Over Training')
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, 'site_performance_over_time.png'))
+    plt.close()
+    
+    # Save the data as CSV for further analysis
+    df = pd.DataFrame({
+        'epoch': epochs,
+        'accuracy': accuracies,
+        'chance_level': [chance_level] * len(epochs),
+        'divergence_from_chance': chance_divergences
+    })
+    df.to_csv(os.path.join(plot_dir, 'site_performance_over_time.csv'), index=False)
+    print(f"Created site classification performance summary")
 
 # Force immediate output flushing
 print("DEBUG: Script starting")
@@ -234,7 +409,8 @@ try:
             grl_alpha_end=7.5,
             grl_alpha_epochs=300,
             save_dir=staged_save_directory,
-            val_metric_to_monitor="val_age_mae"
+            val_metric_to_monitor="val_age_mae",
+            save_predictions_interval=50 
         )
         print("DEBUG: Staged training completed successfully")
         sys.stdout.flush()
@@ -386,6 +562,27 @@ try:
             
             print(f"Saved staged training metrics to {metrics_file}")
             print(f"Saved staged training summary to {summary_file}")
+
+    # Create confusion matrices from saved prediction data
+    print("\n" + "="*80)
+    print("GENERATING CONFUSION MATRICES FROM SAVED DATA")
+    print("="*80 + "\n")
+    sys.stdout.flush()
+
+    try:
+        # Define site names if known, otherwise will use generic labels
+        site_names = [f"Site {i}" for i in range(num_sites)]
+        
+        # Generate confusion matrices from saved data
+        create_confusion_matrices(staged_save_directory, site_names)
+        
+        print("\nConfusion matrix generation complete!")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"ERROR during confusion matrix generation: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        sys.stdout.flush()
 
     print("\n" + "="*80)
     print("All tract staged training experiment complete!")
