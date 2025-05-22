@@ -1094,6 +1094,41 @@ def calculate_r2_score(y_true, y_pred, verbose=False):
     # Return as Python float
     return r2.item()
 
+def save_site_predictions(true_sites, pred_sites, epoch, save_dir, prefix=''):
+    """
+    Save site prediction data to create confusion matrices.
+    
+    Parameters
+    ----------
+    true_sites : torch.Tensor
+        Ground truth site labels
+    pred_sites : torch.Tensor
+        Predicted site labels
+    epoch : int
+        Current epoch number
+    save_dir : str
+        Directory to save the data
+    prefix : str
+        Prefix for saved filenames (e.g., 'train' or 'val')
+    """
+    import numpy as np
+    import os
+    
+    # Convert tensors to numpy arrays if needed
+    if isinstance(true_sites, torch.Tensor):
+        true_sites = true_sites.cpu().numpy()
+    if isinstance(pred_sites, torch.Tensor):
+        pred_sites = pred_sites.cpu().numpy()
+    
+    # Save the data
+    data_dir = os.path.join(save_dir, 'site_predictions')
+    os.makedirs(data_dir, exist_ok=True)
+    
+    np.save(os.path.join(data_dir, f'{prefix}_true_sites_epoch_{epoch}.npy'), true_sites)
+    np.save(os.path.join(data_dir, f'{prefix}_pred_sites_epoch_{epoch}.npy'), pred_sites)
+    
+    print(f"Saved {prefix} site prediction data for epoch {epoch}")
+
 def train_vae_age_site_staged(
     vae_model,
     age_predictor,
@@ -1116,7 +1151,8 @@ def train_vae_age_site_staged(
     grl_alpha_end=2.5,
     grl_alpha_epochs=100,
     save_dir="staged_models",
-    val_metric_to_monitor="val_age_mae"
+    val_metric_to_monitor="val_age_mae",
+    save_predictions_interval=50  # Save predictions every N epochs
 ):
     import os, sys
     print(f"DEBUG: Starting train_vae_age_site_staged function")
@@ -1761,6 +1797,10 @@ def train_vae_age_site_staged(
         train_age_preds = []  # Add these for R² calculation
         train_age_trues = []  # Add these for R² calculation
         
+        # For confusion matrix - collect all true and predicted site labels for this epoch
+        all_train_site_true = []
+        all_train_site_pred = []
+        
         for i, (x, labels) in enumerate(train_data):
             batch_size = x.size(0)
             tract_data = x.to(device, non_blocking=True)
@@ -1804,6 +1844,10 @@ def train_vae_age_site_staged(
             
             _, predicted_sites = torch.max(site_pred.data, 1)
             running_site_correct += (predicted_sites == site_true).sum().item()
+            
+            # Collect site predictions and true labels for confusion matrix
+            all_train_site_true.append(site_true.detach().cpu())
+            all_train_site_pred.append(predicted_sites.detach().cpu())
 
             if epoch == 0 and i < 3:  # Only print for first 3 batches of first epoch
                 print("predicted age: ", age_pred)
@@ -1826,6 +1870,10 @@ def train_vae_age_site_staged(
         val_items = 0
         val_age_preds = []  # Add these for R² calculation
         val_age_trues = []  # Add these for R² calculation
+        
+        # For confusion matrix - collect all true and predicted site labels for this epoch
+        all_val_site_true = []
+        all_val_site_pred = []
         
         with torch.no_grad():
             for x, labels in val_data:
@@ -1862,6 +1910,24 @@ def train_vae_age_site_staged(
                 
                 _, predicted_sites = torch.max(site_pred.data, 1)
                 running_val_site_correct += (predicted_sites == site_true).sum().item()
+                
+                # Collect site predictions and true labels for confusion matrix
+                all_val_site_true.append(site_true.cpu())
+                all_val_site_pred.append(predicted_sites.cpu())
+        
+        # Save site prediction data for confusion matrix
+        if epoch == 0 or (epoch + 1) % save_predictions_interval == 0 or epoch == total_stage2_epochs - 1:
+            # Concat all predictions and true labels for this epoch
+            train_site_true = torch.cat(all_train_site_true).numpy()
+            train_site_pred = torch.cat(all_train_site_pred).numpy()
+            val_site_true = torch.cat(all_val_site_true).numpy()
+            val_site_pred = torch.cat(all_val_site_pred).numpy()
+            
+            # Save data for later confusion matrix generation
+            save_site_predictions(train_site_true, train_site_pred, epoch+1, save_dir, prefix='train')
+            save_site_predictions(val_site_true, val_site_pred, epoch+1, save_dir, prefix='val')
+        
+        # ... rest of the existing code ...
         
         # Calculate average metrics
         avg_train_loss = running_loss / train_items
