@@ -904,7 +904,7 @@ def prep_fa_flattned_data(dataset, batch_size=64):
 def prep_fa_dataset(dataset, target_labels="dki_fa", batch_size=32):
     """
     Extracts features that match the specified label from the provided dataset and
-    prepares the dataset for training.
+    prepares the dataset for training. Concatenates adjacent tracts to create longer sequences.
     """
     # Can be single target or a list of targets
     if isinstance(target_labels, str):
@@ -925,9 +925,23 @@ def prep_fa_dataset(dataset, target_labels="dki_fa", batch_size=32):
             f"No features found matching patterns: {features}. "
             f"Features found: {available_features}"
         )
+    
+    print(f"FA indices: {fa_indices}")
 
     X_fa = dataset.X[:, fa_indices]
+    print(f"X_fa shape: {X_fa.shape}")
     feature_names_fa = [dataset.feature_names[i] for i in fa_indices]
+    print(f"feature_names_fa: {feature_names_fa}")
+    print(f"dataset.feature_names: {len(feature_names_fa)}")
+    print(f"dataset.X shape: {dataset.X.shape}")
+    print(f"dataset.y shape: {dataset.y.shape}")
+    print(f"dataset.groups shape: {dataset.groups}")
+    print(f"dataset.group_names: {dataset.group_names}")
+    print(f"dataset.target_cols: {dataset.target_cols}")
+    print(f"dataset.subjects: {dataset.subjects}")
+    print(f"dataset.sessions: {dataset.sessions}")
+    print(f"dataset.classes: {dataset.classes}")
+
     dataset_fa = AFQDataset(
         X=X_fa,
         y=dataset.y,
@@ -940,6 +954,62 @@ def prep_fa_dataset(dataset, target_labels="dki_fa", batch_size=32):
         classes=dataset.classes,
     )
     return prep_pytorch_data(dataset_fa, batch_size=batch_size)
+
+def prep_fa_dataset_paired(dataset, target_labels="dki_fa", batch_size=32):
+    """
+    Extracts features that match the specified label and pairs adjacent tracts.
+    """
+    # Get the standard dataset first
+    torch_dataset, train_loader, test_loader, val_loader = prep_fa_dataset(
+        dataset, target_labels=target_labels, batch_size=batch_size
+    )
+    
+    # Create wrapper dataset class to pair adjacent tracts
+    class PairedTractsDataset(torch.utils.data.Dataset):
+        def __init__(self, original_dataset):
+            self.original_dataset = original_dataset
+            
+        def __len__(self):
+            return len(self.original_dataset)
+            
+        def __getitem__(self, idx):
+            x, y = self.original_dataset[idx]
+            
+            # Input x will be shape [48, 50] - has 48 tracts with 50 nodes each
+            num_tracts = x.shape[0]
+            num_pairs = num_tracts // 2
+            
+            # Initialize output tensor that will hold paired tracts
+            paired_x = torch.zeros(num_pairs, 100, dtype=x.dtype, device=x.device)
+            
+            # Pair adjacent tracts (0&1, 2&3, etc.)
+            for i in range(num_pairs):
+                tract1_idx = i * 2
+                tract2_idx = i * 2 + 1
+                
+                # Concatenate along the node dimension
+                paired_x[i, :50] = x[tract1_idx]
+                paired_x[i, 50:] = x[tract2_idx]
+            
+            return paired_x, y
+    
+    # Wrap each dataset to apply tract pairing
+    train_paired = PairedTractsDataset(train_loader.dataset)
+    test_paired = PairedTractsDataset(test_loader.dataset)  
+    val_paired = PairedTractsDataset(val_loader.dataset)
+    
+    # Create new data loaders with paired tracts
+    train_loader_paired = torch.utils.data.DataLoader(
+        train_paired, batch_size=batch_size, shuffle=True
+    )
+    test_loader_paired = torch.utils.data.DataLoader(
+        test_paired, batch_size=batch_size, shuffle=False
+    )
+    val_loader_paired = torch.utils.data.DataLoader(
+        val_paired, batch_size=batch_size, shuffle=False
+    )
+    
+    return torch_dataset, train_loader_paired, test_loader_paired, val_loader_paired
 
 def prep_first_tract_data(dataset, batch_size=32):
     """
@@ -1747,14 +1817,14 @@ def train_vae_age_site_staged(
                 combined_optimizer = torch.optim.Adam([
                     {'params': vae_model.parameters(), 'lr': lr},
                     {'params': age_predictor.parameters(), 'lr': lr * 0.05 * phase2_progress},
-                    {'params': site_predictor.parameters(), 'lr': lr * 0.0001 * phase2_progress}
+                    {'params': site_predictor.parameters(), 'lr': lr * 0.01 * phase2_progress}  # Increased from 0.0001 to 0.01
                 ])
                 combined_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(combined_optimizer, "min", patience=10, factor=0.5, verbose=True)
                 print(f"Created new optimizer with controlled learning rates")
             elif epoch > phase1_epochs:
                 # Update learning rates based on progress
                 combined_optimizer.param_groups[1]['lr'] = lr * 0.01 * phase2_progress
-                combined_optimizer.param_groups[2]['lr'] = lr * 0.0001 * phase2_progress
+                combined_optimizer.param_groups[2]['lr'] = lr * 0.01 * phase2_progress  # Increased from 0.0001 to 0.01
                 
                 print(f"Phase 2 Progress: {phase2_progress:.2f} | VAE lr: {combined_optimizer.param_groups[0]['lr']:.6f} | " +
                       f"Age lr: {combined_optimizer.param_groups[1]['lr']:.6f} | Site lr: {combined_optimizer.param_groups[2]['lr']:.6f}")
