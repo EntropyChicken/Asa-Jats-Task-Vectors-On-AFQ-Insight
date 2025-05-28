@@ -14,7 +14,7 @@ from torch.distributions.normal import Normal
 from sklearn.decomposition import PCA
 import afqinsight.augmentation as aug
 import pandas as pd
-# from afqinsight.nn.pt_models import Conv1DVariationalAutoencoder
+from afqinsight.nn.pt_models import Conv1DVariationalAutoencoder
 import seaborn as sns
 import matplotlib.pyplot as plt
 import os
@@ -208,8 +208,8 @@ sys.path.insert(1, '/mmfs1/gscratch/nrdg/samchou/AFQ-Insight-Autoencoder-Experim
 try:
     print("DEBUG: Importing utility functions")
     sys.stdout.flush()
-    from utils import select_device, kl_divergence_loss, prep_fa_dataset, train_vae_age_site_staged
-    from models import Conv1DVariationalAutoencoder_fa_unflattened, AgePredictorCNN, SitePredictorCNN, Conv1DVariationalAutoencoder_fa, BaseConv1DEncode_fa_unflattened
+    from utils import select_device, kl_divergence_loss, prep_fa_dataset, train_vae_age_site_staged, prep_fa_dataset_paired
+    from models import Conv1DVariationalAutoencoder_fa_unflattened, AgePredictorCNN, SitePredictorCNN, Conv1DVariationalAutoencoder, BaseConv1DEncode_fa_unflattened
     print("DEBUG: Successfully imported utility functions")
     sys.stdout.flush()
 except Exception as e:
@@ -248,8 +248,9 @@ try:
     print("DEBUG: Preparing FA+MD dataset")
     sys.stdout.flush()
     # Create a combined FA+MD dataset
-    torch_dataset, train_loader, test_loader, val_loader = prep_fa_dataset(dataset, target_labels=["dki_fa"], batch_size=128)
-    
+    # torch_dataset, train_loader, test_loader, val_loader = prep_fa_dataset(dataset, target_labels=["dki_fa"], batch_size=128)
+    torch_dataset, train_loader, test_loader, val_loader = prep_fa_dataset_paired(dataset, target_labels=["dki_fa"], batch_size=128)
+
     print("DEBUG: Prepared first tract data")
     sys.stdout.flush()
 
@@ -273,8 +274,8 @@ try:
         print(traceback.format_exc())
         sys.stdout.flush()
         # Set defaults if detection fails
-        input_channels = 48
-        sequence_length = 50
+        input_channels = 24
+        sequence_length = 100
         print(f"Using default input shape: channels={input_channels}, sequence_length={sequence_length}")
     
     # Create a remapped dataset to handle the site mapping correctly
@@ -330,10 +331,12 @@ try:
     dropout = 0.0  # VAE dropout
     age_dropout = 0.1
     site_dropout = 0.2
-    w_recon = 5.0
-    w_kl = 0.0001
-    w_age = 15.0  # Higher weight for age prediction
-    w_site = 0.5  # Higher weight for site adversarial training
+    
+    # IMPROVED VAE PARAMETERS TO FIX POSTERIOR COLLAPSE
+    w_recon = 10.0  # Reduced from 25.0 - don't let reconstruction dominate
+    w_kl = 0.0005   # Increased from 0.0001 - give KL more weight
+    w_age = 50.0  # Higher weight for age prediction
+    w_site = 1.5  # Higher weight for site adversarial training
     
     print("DEBUG: Creating models")
     sys.stdout.flush()
@@ -348,19 +351,20 @@ try:
     print(f"Detected {num_sites} unique site IDs in the data: {sorted(unique_sites)}")
 
     # Add debug to check actual dimensions
-    dummy_input = torch.zeros(1, 48, 50, device=device)
-    dummy_enc = BaseConv1DEncode_fa_unflattened(num_tracts=48, latent_dims=64, dropout=0.0)
-    dummy_enc.to(device)
-    with torch.no_grad():
-        out = dummy_enc._encode_base(dummy_input)
-        print(f"DEBUG: Encoder output shape with 48x50 input: {out.shape}")
-        flattened_size = out.numel()
-        print(f"DEBUG: Flattened size: {flattened_size}, which is {flattened_size//64}*64")
+    # dummy_input = torch.zeros(1, 48, 50, device=device)
+    # dummy_enc = BaseConv1DEncode_fa_unflattened(num_tracts=48, latent_dims=64, dropout=0.0)
+    # dummy_enc.to(device)
+    # with torch.no_grad():
+    #     out = dummy_enc._encode_base(dummy_input)
+    #     print(f"DEBUG: Encoder output shape with 48x50 input: {out.shape}")
+    #     flattened_size = out.numel()
+    #     print(f"DEBUG: Flattened size: {flattened_size}, which is {flattened_size//64}*64")
 
     # Create models
     try:
-        vae = Conv1DVariationalAutoencoder_fa_unflattened(num_tracts=48,latent_dims=latent_dim, dropout=dropout)
-        
+        # vae = Conv1DVariationalAutoencoder_fa_unflattened(num_tracts=48,latent_dims=latent_dim, dropout=dropout)
+        vae = Conv1DVariationalAutoencoder(num_tracts=24,latent_dims=latent_dim, dropout=dropout)
+
         age_predictor = AgePredictorCNN(input_channels=input_channels, 
                                         sequence_length=sequence_length, 
                                         dropout=age_dropout)
@@ -393,8 +397,8 @@ try:
             site_predictor=site_predictor,
             train_data=train_loader_raw,
             val_data=val_loader_raw,
-            epochs_stage1=500,  # For individual training
-            epochs_stage2=1000,  # For adversarial training
+            epochs_stage1=1000,  # For individual training
+            epochs_stage2=2000,  # For adversarial training
             lr=0.0001,
             device=device,
             max_grad_norm=1.0,
@@ -404,13 +408,14 @@ try:
             w_site=w_site,
             kl_annealing_start_epoch=250,
             kl_annealing_duration=500,
-            kl_annealing_start=0.0001,
+            kl_annealing_start=0.001,
             grl_alpha_start=0.0,
-            grl_alpha_end=7.5,
-            grl_alpha_epochs=300,
+            grl_alpha_end=15.0,  # Increased from 7.5 to 15.0 for stronger adversarial effect
+            grl_alpha_epochs=600,  # Increased from 300 to 600 to ramp up more gradually
             save_dir=staged_save_directory,
             val_metric_to_monitor="val_age_mae",
-            save_predictions_interval=50  
+            save_predictions_interval=50,
+            periodic_save_interval=50  # Save model weights every 50 epochs
         )
         print("DEBUG: Staged training completed successfully")
         sys.stdout.flush()
