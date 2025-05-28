@@ -492,7 +492,8 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
 
 def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device = 'cuda',
                                 beta=1.0, max_grad_norm=1.0, 
-                                kl_annealing_start_epoch=200, kl_annealing_duration=200, kl_annealing_start=0.0001):
+                                kl_annealing_start_epoch=200, kl_annealing_duration=200, kl_annealing_start=0.0001,
+                                periodic_save_interval=50):
     """
     Training loop for variational autoencoder with delayed sigmoid KL annealing.
     KL term has zero weight until kl_annealing_start_epoch, then anneals over kl_annealing_duration.
@@ -634,6 +635,12 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
             
             torch.save(best_model_state, model_filename)
             print(f"Best model saved to: {model_filename}")
+        
+        # Periodic saving every N epochs
+        if (epoch + 1) % periodic_save_interval == 0:
+            periodic_model_path = f"vae_model_ld{latent_dim}_dr{dropout}_epoch_{epoch+1}.pth"
+            torch.save(model.state_dict(), periodic_model_path)
+            print(f"  Saved periodic VAE model at epoch {epoch+1} to {periodic_model_path}")
         
         print(f"Epoch {epoch+1}, KL Weight: {current_beta:.6f}, Train RMSE: {avg_train_rmse:.4f}, Val RMSE: {avg_val_rmse:.4f}, KL (Train): {avg_train_kl:.4f}, KL (Val): {avg_val_kl:.4f}, "
               f"Recon (Train): {avg_train_recon_loss:.4f}, Recon (Val): {avg_val_recon_loss:.4f}")
@@ -1222,11 +1229,14 @@ def train_vae_age_site_staged(
     grl_alpha_epochs=100,
     save_dir="staged_models",
     val_metric_to_monitor="val_age_mae",
-    save_predictions_interval=50  # Save predictions every N epochs
+    save_predictions_interval=50,  # Save predictions every N epochs
+    periodic_save_interval=50,  # Save model weights every N epochs
+    is_variational=True  # NEW: Whether the autoencoder is variational or not
 ):
     import os, sys
     print(f"DEBUG: Starting train_vae_age_site_staged function")
     print(f"DEBUG: Training configuration - epochs_stage1={epochs_stage1}, epochs_stage2={epochs_stage2}, device={device}")
+    print(f"DEBUG: Autoencoder type - {'Variational' if is_variational else 'Non-variational'}")
     print(f"DEBUG: KL annealing config - start_epoch={kl_annealing_start_epoch}, duration={kl_annealing_duration}, start_value={kl_annealing_start}")
     print(f"DEBUG: Data loaders - train_data has {len(train_data)} batches, val_data has {len(val_data)} batches")
     sys.stdout.flush()
@@ -1268,7 +1278,7 @@ def train_vae_age_site_staged(
     sys.stdout.flush()
     
     # --- STEP 1: Train VAE for reconstruction ---
-    print(f"\n{'-'*40}\nTraining VAE for reconstruction...\n{'-'*40}")
+    print(f"\n{'-'*40}\nTraining {'VAE' if is_variational else 'Autoencoder'} for reconstruction...\n{'-'*40}")
     sys.stdout.flush()
     
     try:
@@ -1326,6 +1336,8 @@ def train_vae_age_site_staged(
         vae_current_lr_epoch.append(vae_optimizer.param_groups[0]["lr"])
         
         print(f"DEBUG: Current KL weight (beta): {current_beta:.6f}")
+        if not is_variational:
+            print(f"DEBUG: KL loss will be ignored for non-variational autoencoder")
         sys.stdout.flush()
         
         # Training
@@ -1351,21 +1363,30 @@ def train_vae_age_site_staged(
                 vae_optimizer.zero_grad(set_to_none=True)
                 
                 with torch.amp.autocast('cuda', enabled=(device == "cuda")):
-                    x_hat, mean, logvar = vae_model(tract_data)
-                    
-                    recon_loss = recon_criterion(x_hat, tract_data)
-                    kl_loss_raw = kl_divergence_loss(mean, logvar) / batch_size
-                    
-                    # Explicitly ensure KL loss is zero before start_epoch
-                    if epoch < kl_annealing_start_epoch:
-                        weighted_kl_loss = 0.0
-                        # Still track the raw KL loss for monitoring
-                        kl_loss = kl_loss_raw
+                    if is_variational:
+                        x_hat, mean, logvar = vae_model(tract_data)
+                        
+                        recon_loss = recon_criterion(x_hat, tract_data)
+                        kl_loss_raw = kl_divergence_loss(mean, logvar) / batch_size
+                        
+                        # Explicitly ensure KL loss is zero before start_epoch
+                        if epoch < kl_annealing_start_epoch:
+                            weighted_kl_loss = 0.0
+                            # Still track the raw KL loss for monitoring
+                            kl_loss = kl_loss_raw
+                        else:
+                            weighted_kl_loss = current_beta * kl_loss_raw
+                            kl_loss = kl_loss_raw
+                        
+                        total_loss = recon_loss + weighted_kl_loss
                     else:
-                        weighted_kl_loss = current_beta * kl_loss_raw
-                        kl_loss = kl_loss_raw
-                    
-                    total_loss = recon_loss + weighted_kl_loss
+                        # Non-variational autoencoder - only returns x_hat
+                        x_hat = vae_model(tract_data)
+                        
+                        recon_loss = recon_criterion(x_hat, tract_data)
+                        kl_loss = torch.tensor(0.0, device=device)  # No KL loss for standard autoencoder
+                        
+                        total_loss = recon_loss  # Only reconstruction loss
                 
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(vae_model.parameters(), max_norm=max_grad_norm)
@@ -1409,21 +1430,30 @@ def train_vae_age_site_staged(
                 tract_data = x.to(device, non_blocking=True)
                 
                 with torch.amp.autocast('cuda', enabled=(device == "cuda")):
-                    x_hat, mean, logvar = vae_model(tract_data)
-                    
-                    recon_loss = recon_criterion(x_hat, tract_data)
-                    kl_loss_raw = kl_divergence_loss(mean, logvar) / batch_size
-                    
-                    # Explicitly ensure KL loss is zero before start_epoch for validation too
-                    if epoch < kl_annealing_start_epoch:
-                        weighted_kl_loss = 0.0
-                        # Still track the raw KL loss for monitoring
-                        kl_loss = kl_loss_raw
+                    if is_variational:
+                        x_hat, mean, logvar = vae_model(tract_data)
+                        
+                        recon_loss = recon_criterion(x_hat, tract_data)
+                        kl_loss_raw = kl_divergence_loss(mean, logvar) / batch_size
+                        
+                        # Explicitly ensure KL loss is zero before start_epoch for validation too
+                        if epoch < kl_annealing_start_epoch:
+                            weighted_kl_loss = 0.0
+                            # Still track the raw KL loss for monitoring
+                            kl_loss = kl_loss_raw
+                        else:
+                            weighted_kl_loss = current_beta * kl_loss_raw
+                            kl_loss = kl_loss_raw
+                        
+                        total_loss = recon_loss + weighted_kl_loss
                     else:
-                        weighted_kl_loss = current_beta * kl_loss_raw
-                        kl_loss = kl_loss_raw
-                    
-                    total_loss = recon_loss + weighted_kl_loss
+                        # Non-variational autoencoder - only returns x_hat
+                        x_hat = vae_model(tract_data)
+                        
+                        recon_loss = recon_criterion(x_hat, tract_data)
+                        kl_loss = torch.tensor(0.0, device=device)  # No KL loss for standard autoencoder
+                        
+                        total_loss = recon_loss  # Only reconstruction loss
                 
                 val_items += batch_size
                 val_recon_loss += recon_loss.item() * batch_size
@@ -1459,7 +1489,14 @@ def train_vae_age_site_staged(
             best_vae_loss = avg_val_total_loss
             best_vae_state = vae_model.state_dict()
             torch.save(best_vae_state, os.path.join(save_dir, "best_vae.pth"))
-            print(f"  Saved best VAE model with validation loss: {best_vae_loss:.4f}")
+            print(f"  Saved best {'VAE' if is_variational else 'Autoencoder'} model with validation loss: {best_vae_loss:.4f}")
+            sys.stdout.flush()
+        
+        # Periodic saving every N epochs
+        if (epoch + 1) % periodic_save_interval == 0:
+            periodic_vae_path = os.path.join(save_dir, f"vae_epoch_{epoch+1}.pth")
+            torch.save(vae_model.state_dict(), periodic_vae_path)
+            print(f"  Saved periodic {'VAE' if is_variational else 'Autoencoder'} model at epoch {epoch+1} to {periodic_vae_path}")
             sys.stdout.flush()
     
     # Load best VAE model
@@ -1747,8 +1784,8 @@ def train_vae_age_site_staged(
     print(f"\n{'='*40}\nSTAGE 2: Training Combined Model with Frozen Predictors\n{'='*40}")
     
     # Create combined model
-    from models import CombinedVAE_Predictors
-    combined_model = CombinedVAE_Predictors(vae_model, age_predictor, site_predictor)
+    from models import CombinedAE_Predictors
+    combined_model = CombinedAE_Predictors(vae_model, age_predictor, site_predictor, is_variational=is_variational)
     combined_model = combined_model.to(device)
 
     # Training metrics - keep all your existing metrics
@@ -1997,6 +2034,9 @@ def train_vae_age_site_staged(
             save_site_predictions(train_site_true, train_site_pred, epoch+1, save_dir, prefix='train')
             save_site_predictions(val_site_true, val_site_pred, epoch+1, save_dir, prefix='val')
         
+        # Generate visualizations at specified intervals
+        # if epoch == 0 or (epoch + 1) % visualization_interval == 0 or epoch == total_stage2_epochs - 1:
+        
         # ... rest of the existing code ...
         
         # Calculate average metrics
@@ -2115,6 +2155,13 @@ def train_vae_age_site_staged(
             model_path = os.path.join(save_dir, "best_combined_model.pth")
             torch.save(best_combined_state, model_path)
             print(f"  Saved best combined model with {val_metric_to_monitor}: {best_val_metric_value:.4f}")
+        
+        # Periodic saving every N epochs
+        if (epoch + 1) % periodic_save_interval == 0:
+            periodic_combined_path = os.path.join(save_dir, f"combined_model_epoch_{epoch+1}.pth")
+            torch.save(combined_model.state_dict(), periodic_combined_path)
+            print(f"  Saved periodic combined model at epoch {epoch+1} to {periodic_combined_path}")
+            sys.stdout.flush()
     
     # Load best combined model
     combined_model.load_state_dict(best_combined_state)

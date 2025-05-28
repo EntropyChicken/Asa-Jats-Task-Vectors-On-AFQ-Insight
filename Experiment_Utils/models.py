@@ -267,6 +267,40 @@ class CombinedVAE_Predictors(nn.Module):
         site_pred = self.site_predictor(x_hat_reversed)
         return x_hat, mean, logvar, age_pred, site_pred
 
+class CombinedAE_Predictors(nn.Module):
+    """
+    Combined model that works with both variational and non-variational autoencoders.
+    """
+    def __init__(self, autoencoder_model, age_predictor, site_predictor, is_variational=True):
+        super().__init__()
+        self.autoencoder = autoencoder_model
+        self.age_predictor = age_predictor
+        self.site_predictor = site_predictor
+        self.is_variational = is_variational
+
+    def forward(self, x, sex=None, grl_alpha=1.0):
+        if self.is_variational:
+            x_hat, mean, logvar = self.autoencoder(x)
+        else:
+            x_hat = self.autoencoder(x)
+            # Create dummy mean and logvar for compatibility
+            # Try to get latent_dims from different possible locations
+            if hasattr(self.autoencoder, 'latent_dims'):
+                latent_dims = self.autoencoder.latent_dims
+            elif hasattr(self.autoencoder, 'encoder') and hasattr(self.autoencoder.encoder, 'latent_dims'):
+                latent_dims = self.autoencoder.encoder.latent_dims
+            else:
+                # Fallback to a reasonable default
+                latent_dims = 32
+            
+            mean = torch.zeros(x.size(0), latent_dims, device=x.device)
+            logvar = torch.zeros(x.size(0), latent_dims, device=x.device)
+        
+        age_pred = self.age_predictor(x_hat)
+        x_hat_reversed = grad_reverse(x_hat, grl_alpha)
+        site_pred = self.site_predictor(x_hat_reversed)
+        return x_hat, mean, logvar, age_pred, site_pred
+
 class ResidualBlock(nn.Module):
     def __init__(self, channels):
         super().__init__()
