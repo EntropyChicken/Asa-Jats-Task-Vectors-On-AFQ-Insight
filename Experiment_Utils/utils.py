@@ -35,7 +35,8 @@ def train_variational_autoencoder_age_site(
      grl_alpha_end=1.0,
      grl_alpha_epochs=100,
      save_prefix="best_combined_model",
-     val_metric_to_monitor="val_age_mae"
+     val_metric_to_monitor="val_age_mae",
+     is_variational=True
  ):
      torch.backends.cudnn.benchmark = True
  
@@ -102,7 +103,12 @@ def train_variational_autoencoder_age_site(
                  kl_annealing_factor = 1.0
          else:
              kl_annealing_factor = 0.0 if epoch < kl_annealing_start_epoch else 1.0
-         current_beta = w_kl * kl_annealing_factor
+         
+         # Skip KL annealing for non-variational autoencoders
+         if is_variational:
+             current_beta = w_kl * kl_annealing_factor
+         else:
+             current_beta = 0.0  # Always zero for non-variational autoencoders
          current_beta_epoch.append(current_beta)
  
          current_w_recon = w_recon
@@ -1888,7 +1894,12 @@ def train_vae_age_site_staged(
                 kl_annealing_factor = 1.0
         else:
             kl_annealing_factor = 0.0 if epoch < kl_annealing_start_epoch else 1.0
-        current_beta = w_kl * kl_annealing_factor
+        
+        # Skip KL annealing for non-variational autoencoders
+        if is_variational:
+            current_beta = w_kl * kl_annealing_factor
+        else:
+            current_beta = 0.0  # Always zero for non-variational autoencoders
         current_beta_epoch.append(current_beta)
         
         # Training
@@ -1921,17 +1932,29 @@ def train_vae_age_site_staged(
                 x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha) # REMOVED sex=sex_data
                 
                 recon_loss = recon_criterion(x_hat, tract_data)
-                kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                
+                # Only calculate KL loss for variational autoencoders
+                if is_variational:
+                    kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                else:
+                    kl_loss = torch.tensor(0.0, device=device)
+                
                 age_loss = age_criterion(age_pred, age_true)
                 site_loss = site_criterion(site_pred, site_true)
                 
                 # In adversarial training with frozen predictors:
                 # 1. Maximize age prediction performance (minimize loss)
                 # 2. Minimize site prediction performance (maximize loss) - this is handled by GRL
-                total_loss = (w_recon * recon_loss +
-                             current_beta * kl_loss +
-                             w_age * age_loss +
-                             w_site * site_loss)
+                if is_variational:
+                    total_loss = (w_recon * recon_loss +
+                                 current_beta * kl_loss +
+                                 w_age * age_loss +
+                                 w_site * site_loss)
+                else:
+                    # For non-variational autoencoders, skip KL loss entirely
+                    total_loss = (w_recon * recon_loss +
+                                 w_age * age_loss +
+                                 w_site * site_loss)
             
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, combined_model.parameters()), max_norm=max_grad_norm)
@@ -1994,14 +2017,29 @@ def train_vae_age_site_staged(
                     x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha) # REMOVED sex=sex_data
                     
                     recon_loss = recon_criterion(x_hat, tract_data)
-                    kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                    
+                    # Only calculate KL loss for variational autoencoders
+                    if is_variational:
+                        kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                    else:
+                        kl_loss = torch.tensor(0.0, device=device)
+                    
                     age_loss = age_criterion(age_pred, age_true)
                     site_loss = site_criterion(site_pred, site_true)
                     
-                    total_loss = (w_recon * recon_loss +
-                                 current_beta * kl_loss +
-                                 w_age * age_loss +
-                                 w_site * site_loss)
+                    # In adversarial training with frozen predictors:
+                    # 1. Maximize age prediction performance (minimize loss)
+                    # 2. Minimize site prediction performance (maximize loss) - this is handled by GRL
+                    if is_variational:
+                        total_loss = (w_recon * recon_loss +
+                                     current_beta * kl_loss +
+                                     w_age * age_loss +
+                                     w_site * site_loss)
+                    else:
+                        # For non-variational autoencoders, skip KL loss entirely
+                        total_loss = (w_recon * recon_loss +
+                                     w_age * age_loss +
+                                     w_site * site_loss)
                 
                 val_items += batch_size
                 running_val_loss += total_loss.item() * batch_size
