@@ -5,6 +5,8 @@ from afqinsight.nn.utils import prep_pytorch_data
 from torch.cuda.amp import autocast, GradScaler
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 def get_beta(current_epoch, total_epochs, start_epoch=100):
     if current_epoch < start_epoch:
@@ -1194,7 +1196,6 @@ def save_site_predictions(true_sites, pred_sites, epoch, save_dir, prefix=''):
     prefix : str
         Prefix for saved filenames (e.g., 'train' or 'val')
     """
-    import numpy as np
     import os
     
     # Convert tensors to numpy arrays if needed
@@ -2071,6 +2072,33 @@ def train_vae_age_site_staged(
             # Save data for later confusion matrix generation
             save_site_predictions(train_site_true, train_site_pred, epoch+1, save_dir, prefix='train')
             save_site_predictions(val_site_true, val_site_pred, epoch+1, save_dir, prefix='val')
+            # --- NEW: Save confusion matrix PNGs for this epoch ---
+            import numpy as np
+            import os
+            import matplotlib.pyplot as plt
+            from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+            # Train confusion matrix
+            cm_train = confusion_matrix(train_site_true, train_site_pred, normalize='true')
+            labels_train = [f"Site {i}" for i in range(cm_train.shape[0])]
+            disp_train = ConfusionMatrixDisplay(confusion_matrix=cm_train, display_labels=labels_train)
+            fig_train, ax_train = plt.subplots(figsize=(8, 6))
+            disp_train.plot(ax=ax_train, cmap='Blues', values_format='.2f')
+            plt.title(f'Train Confusion Matrix - Epoch {epoch+1}')
+            plot_dir = os.path.join(save_dir, 'confusion_matrices')
+            os.makedirs(plot_dir, exist_ok=True)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f'train_confusion_matrix_epoch_{epoch+1}.png'))
+            plt.close(fig_train)
+            # Val confusion matrix
+            cm_val = confusion_matrix(val_site_true, val_site_pred, normalize='true')
+            labels_val = [f"Site {i}" for i in range(cm_val.shape[0])]
+            disp_val = ConfusionMatrixDisplay(confusion_matrix=cm_val, display_labels=labels_val)
+            fig_val, ax_val = plt.subplots(figsize=(8, 6))
+            disp_val.plot(ax=ax_val, cmap='Blues', values_format='.2f')
+            plt.title(f'Val Confusion Matrix - Epoch {epoch+1}')
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f'val_confusion_matrix_epoch_{epoch+1}.png'))
+            plt.close(fig_val)
         
         # Generate visualizations at specified intervals
         # if epoch == 0 or (epoch + 1) % visualization_interval == 0 or epoch == total_stage2_epochs - 1:
@@ -2085,7 +2113,7 @@ def train_vae_age_site_staged(
         avg_train_site_loss = running_site_loss / train_items
         avg_train_age_mae = running_age_mae_sum / train_items
         avg_train_site_acc = (running_site_correct / train_items) * 100
-        
+ 
         # Calculate R² for training age predictions
         all_train_age_preds = torch.cat(train_age_preds)
         all_train_age_trues = torch.cat(train_age_trues)
@@ -2165,10 +2193,6 @@ def train_vae_age_site_staged(
         # Create a temporary dict to easily access the metric value by key
         current_epoch_val_metrics = {
             "val_loss": avg_val_loss,
-            "val_recon_loss": avg_val_recon_loss,
-            "val_kl_loss": avg_val_kl_loss,
-            "val_age_loss": avg_val_age_loss,
-            "val_site_loss": avg_val_site_loss,
             "val_age_mae": avg_val_age_mae,
         }
         
@@ -2235,4 +2259,1487 @@ def train_vae_age_site_staged(
     print(f"\n{'='*40}\nTraining complete!\n{'='*40}")
     print(f"Best {val_metric_to_monitor}: {best_val_metric_value:.4f}")
     
+    return results
+
+def train_vae_age_site_alternating(
+    vae_model,
+    age_predictor,
+    site_predictor,
+    train_data,
+    val_data,
+    epochs_stage1=100,  # For independent training of each model
+    epochs_stage2=200,  # For alternating adversarial training
+    cycle_length=20,    # Number of epochs per alternating cycle
+    lr=0.001,
+    device="cuda",
+    max_grad_norm=1.0,
+    w_recon=1.0,
+    w_kl=1.0,
+    w_age=1.0,
+    w_site=1.0,
+    kl_annealing_start_epoch=0,
+    kl_annealing_duration=50,
+    kl_annealing_start=0.001,
+    grl_alpha_start=0.0,
+    grl_alpha_end=2.5,
+    grl_alpha_epochs=100,
+    save_dir="staged_models",
+    val_metric_to_monitor="val_age_mae",
+    save_predictions_interval=50,
+    periodic_save_interval=50,
+    is_variational=True
+):
+    """
+    Alternating training approach:
+    1. Train individual models (Stage 1)
+    2. Alternating cycles (Stage 2):
+       - Phase A: Optimize reconstruction + age prediction (freeze site predictor)
+       - Phase B: Optimize reconstruction + site confusion (freeze age predictor)
+    """
+    import os, sys
+    print(f"DEBUG: Starting alternating training approach")
+    print(f"DEBUG: Cycle length: {cycle_length} epochs")
+    sys.stdout.flush()
+    
+    os.makedirs(save_dir, exist_ok=True)
+    torch.backends.cudnn.benchmark = True
+    
+    # Move models to device
+    vae_model = vae_model.to(device)
+    age_predictor = age_predictor.to(device)
+    site_predictor = site_predictor.to(device)
+    
+    # Set up loss functions
+    recon_criterion = torch.nn.MSELoss(reduction="mean")
+    age_criterion = torch.nn.L1Loss(reduction="mean")
+    site_criterion = torch.nn.CrossEntropyLoss(reduction="mean")
+    
+    results = {}
+    
+    
+    # ====================================================================
+    # STAGE 1: Train each model independently (reuse existing logic)
+    # ====================================================================
+    print(f"\n{'='*40}\nSTAGE 1: Training models independently\n{'='*40}")
+    sys.stdout.flush()
+    
+    # --- STEP 1: Train VAE for reconstruction ---
+    print(f"\n{'-'*40}\nTraining {'VAE' if is_variational else 'Autoencoder'} for reconstruction...\n{'-'*40}")
+    sys.stdout.flush()
+    
+    vae_optimizer = torch.optim.Adam(vae_model.parameters(), lr=lr)
+    vae_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(vae_optimizer, "min", patience=10, factor=0.5, verbose=True)
+    
+    best_vae_loss = float("inf")
+    best_vae_state = None
+    
+    # Initialize metrics tracking for VAE
+    vae_train_loss_epoch = []
+    vae_val_loss_epoch = []
+    vae_train_recon_loss_epoch = []
+    vae_val_recon_loss_epoch = []
+    vae_train_kl_loss_epoch = []
+    vae_val_kl_loss_epoch = []
+    vae_current_beta_epoch = []
+    vae_current_lr_epoch = []
+    
+    # Training loop for VAE
+    for epoch in range(epochs_stage1):
+        # KL Beta Calculation
+        if kl_annealing_duration > 0 and epoch >= kl_annealing_start_epoch:
+            annealing_epoch = epoch - kl_annealing_start_epoch
+            if annealing_epoch < kl_annealing_duration:
+                progress = annealing_epoch / kl_annealing_duration
+                sigmoid_val = 1 / (1 + np.exp(-10 * (progress - 0.5)))
+                kl_annealing_factor = kl_annealing_start + (1.0 - kl_annealing_start) * sigmoid_val
+            else:
+                kl_annealing_factor = 1.0
+        else:
+            kl_annealing_factor = 0.0 if epoch < kl_annealing_start_epoch else 1.0
+        current_beta = w_kl * kl_annealing_factor
+        vae_current_beta_epoch.append(current_beta)
+        vae_current_lr_epoch.append(vae_optimizer.param_groups[0]["lr"])
+        
+        # Training
+        vae_model.train()
+        train_recon_loss = 0.0
+        train_kl_loss = 0.0
+        train_total_loss = 0.0
+        train_items = 0
+        
+        for i, (x, _) in enumerate(train_data):
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            
+            vae_optimizer.zero_grad(set_to_none=True)
+            
+            with torch.amp.autocast('cuda', enabled=(device == "cuda")):
+                if is_variational:
+                    x_hat, mean, logvar = vae_model(tract_data)
+                    recon_loss = recon_criterion(x_hat, tract_data)
+                    kl_loss_raw = kl_divergence_loss(mean, logvar) / batch_size
+                    
+                    if epoch < kl_annealing_start_epoch:
+                        weighted_kl_loss = 0.0
+                        kl_loss = kl_loss_raw
+                    else:
+                        weighted_kl_loss = current_beta * kl_loss_raw
+                        kl_loss = kl_loss_raw
+                    
+                    total_loss = recon_loss + weighted_kl_loss
+                else:
+                    x_hat = vae_model(tract_data)
+                    recon_loss = recon_criterion(x_hat, tract_data)
+                    kl_loss = torch.tensor(0.0, device=device)
+                    total_loss = recon_loss
+            
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(vae_model.parameters(), max_norm=max_grad_norm)
+            vae_optimizer.step()
+            
+            train_items += batch_size
+            train_recon_loss += recon_loss.item() * batch_size
+            train_kl_loss += kl_loss.item() * batch_size
+            train_total_loss += total_loss.item() * batch_size
+            
+            if (i + 1) % 10 == 0:
+                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(train_data)} | Loss: {total_loss.item():.4f}", end="")
+        
+        # Validation
+        vae_model.eval()
+        val_recon_loss = 0.0
+        val_kl_loss = 0.0
+        val_total_loss = 0.0
+        val_items = 0
+        
+        with torch.no_grad():
+            for x, _ in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                
+                with torch.amp.autocast('cuda', enabled=(device == "cuda")):
+                    if is_variational:
+                        x_hat, mean, logvar = vae_model(tract_data)
+                        recon_loss = recon_criterion(x_hat, tract_data)
+                        kl_loss_raw = kl_divergence_loss(mean, logvar) / batch_size
+                        
+                        if epoch < kl_annealing_start_epoch:
+                            weighted_kl_loss = 0.0
+                            kl_loss = kl_loss_raw
+                        else:
+                            weighted_kl_loss = current_beta * kl_loss_raw
+                            kl_loss = kl_loss_raw
+                        
+                        total_loss = recon_loss + weighted_kl_loss
+                    else:
+                        x_hat = vae_model(tract_data)
+                        recon_loss = recon_criterion(x_hat, tract_data)
+                        kl_loss = torch.tensor(0.0, device=device)
+                        total_loss = recon_loss
+                
+                val_items += batch_size
+                val_recon_loss += recon_loss.item() * batch_size
+                val_kl_loss += kl_loss.item() * batch_size
+                val_total_loss += total_loss.item() * batch_size
+        
+        avg_train_recon_loss = train_recon_loss / train_items
+        avg_train_kl_loss = train_kl_loss / train_items
+        avg_train_total_loss = train_total_loss / train_items
+        
+        avg_val_recon_loss = val_recon_loss / val_items
+        avg_val_kl_loss = val_kl_loss / val_items
+        avg_val_total_loss = val_total_loss / val_items
+        
+        # Store metrics
+        vae_train_loss_epoch.append(avg_train_total_loss)
+        vae_val_loss_epoch.append(avg_val_total_loss)
+        vae_train_recon_loss_epoch.append(avg_train_recon_loss)
+        vae_val_recon_loss_epoch.append(avg_val_recon_loss)
+        vae_train_kl_loss_epoch.append(avg_train_kl_loss)
+        vae_val_kl_loss_epoch.append(avg_val_kl_loss)
+        
+        print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train Loss: {avg_train_total_loss:.4f} | Val Loss: {avg_val_total_loss:.4f}")
+        print(f"  Recon Loss: {avg_train_recon_loss:.4f} (train) / {avg_val_recon_loss:.4f} (val)")
+        
+        vae_scheduler.step(avg_val_total_loss)
+        
+        # Save best model
+        if avg_val_total_loss < best_vae_loss:
+            best_vae_loss = avg_val_total_loss
+            best_vae_state = vae_model.state_dict()
+            torch.save(best_vae_state, os.path.join(save_dir, "best_vae_alternating.pth"))
+            print(f"  Saved best {'VAE' if is_variational else 'Autoencoder'} model")
+        
+        # Periodic saving
+        if (epoch + 1) % periodic_save_interval == 0:
+            periodic_vae_path = os.path.join(save_dir, f"vae_alternating_epoch_{epoch+1}.pth")
+            torch.save(vae_model.state_dict(), periodic_vae_path)
+    
+    # Load best VAE model
+    vae_model.load_state_dict(best_vae_state)
+    results["vae"] = {
+        "best_val_loss": best_vae_loss,
+        "train_loss_epoch": vae_train_loss_epoch,
+        "val_loss_epoch": vae_val_loss_epoch,
+        "train_recon_loss_epoch": vae_train_recon_loss_epoch,
+        "val_recon_loss_epoch": vae_val_recon_loss_epoch,
+        "train_kl_loss_epoch": vae_train_kl_loss_epoch,
+        "val_kl_loss_epoch": vae_val_kl_loss_epoch,
+        "current_beta_epoch": vae_current_beta_epoch,
+        "current_lr_epoch": vae_current_lr_epoch
+    }
+    
+    # --- STEP 2: Train Age Predictor on raw data ---
+    print(f"\n{'-'*40}\nTraining Age Predictor on raw data...\n{'-'*40}")
+    
+    age_optimizer = torch.optim.Adam(age_predictor.parameters(), lr=lr)
+    age_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(age_optimizer, "min", patience=10, factor=0.5, verbose=True)
+    
+    best_age_mae = float("inf")
+    best_age_state = None
+    
+    age_train_loss_epoch = []
+    age_val_loss_epoch = []
+    age_train_r2_epoch = []
+    age_val_r2_epoch = []
+    age_current_lr_epoch = []
+    
+    # Training loop for Age Predictor
+    for epoch in range(epochs_stage1):
+        age_current_lr_epoch.append(age_optimizer.param_groups[0]["lr"])
+        
+        # Training
+        age_predictor.train()
+        train_age_loss = 0.0
+        train_predictions = []
+        train_targets = []
+        train_items = 0
+        
+        for i, (x, labels) in enumerate(train_data):
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            age_true = labels[:, 0].float().unsqueeze(1).to(device)
+            
+            age_optimizer.zero_grad(set_to_none=True)
+            
+            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                age_pred = age_predictor(tract_data)
+                age_loss = age_criterion(age_pred, age_true)
+            
+            age_loss.backward()
+            torch.nn.utils.clip_grad_norm_(age_predictor.parameters(), max_norm=max_grad_norm)
+            age_optimizer.step()
+            
+            train_items += batch_size
+            train_age_loss += age_loss.item() * batch_size
+            
+            train_predictions.append(age_pred.detach())
+            train_targets.append(age_true.detach())
+            
+            if (i + 1) % 10 == 0:
+                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(train_data)} | MAE: {age_loss.item():.4f}", end="")
+        
+        # Calculate R² for training set
+        all_train_preds = torch.cat(train_predictions)
+        all_train_targets = torch.cat(train_targets)
+        train_r2 = calculate_r2_score(all_train_targets, all_train_preds, verbose=False)
+        
+        # Validation
+        age_predictor.eval()
+        val_age_loss = 0.0
+        val_predictions = []
+        val_targets = []
+        val_items = 0
+        
+        with torch.no_grad():
+            for x, labels in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                age_true = labels[:, 0].float().unsqueeze(1).to(device)
+                
+                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                    age_pred = age_predictor(tract_data)
+                    age_loss = age_criterion(age_pred, age_true)
+                
+                val_items += batch_size
+                val_age_loss += age_loss.item() * batch_size
+                
+                val_predictions.append(age_pred)
+                val_targets.append(age_true)
+        
+        # Calculate R² for validation set
+        all_val_preds = torch.cat(val_predictions)
+        all_val_targets = torch.cat(val_targets)
+        val_r2 = calculate_r2_score(all_val_targets, all_val_preds, verbose=False)
+        
+        avg_train_age_loss = train_age_loss / train_items
+        avg_val_age_loss = val_age_loss / val_items
+        
+        # Store metrics
+        age_train_loss_epoch.append(avg_train_age_loss)
+        age_val_loss_epoch.append(avg_val_age_loss)
+        age_train_r2_epoch.append(train_r2)
+        age_val_r2_epoch.append(val_r2)
+        
+        print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train MAE: {avg_train_age_loss:.4f} | Val MAE: {avg_val_age_loss:.4f}")
+        print(f"  Train R²: {train_r2:.4f} | Val R²: {val_r2:.4f}")
+        
+        age_scheduler.step(avg_val_age_loss)
+        
+        # Save best model
+        if avg_val_age_loss < best_age_mae:
+            best_age_mae = avg_val_age_loss
+            best_age_state = age_predictor.state_dict()
+            torch.save(best_age_state, os.path.join(save_dir, "best_age_predictor_alternating.pth"))
+            print(f"  Saved best Age Predictor model with validation MAE: {best_age_mae:.4f}")
+    
+    # Load best Age Predictor model
+    age_predictor.load_state_dict(best_age_state)
+    results["age_predictor"] = {
+        "best_val_mae": best_age_mae,
+        "train_loss_epoch": age_train_loss_epoch,
+        "val_loss_epoch": age_val_loss_epoch,
+        "train_r2_epoch": age_train_r2_epoch,
+        "val_r2_epoch": age_val_r2_epoch,
+        "current_lr_epoch": age_current_lr_epoch
+    }
+    
+    # --- STEP 3: Train Site Predictor on raw data ---
+    print(f"\n{'-'*40}\nTraining Site Predictor on raw data...\n{'-'*40}")
+    
+    site_optimizer = torch.optim.Adam(site_predictor.parameters(), lr=lr)
+    site_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(site_optimizer, "min", patience=10, factor=0.5, verbose=True)
+    
+    best_site_loss = float("inf")
+    best_site_state = None
+    
+    site_train_loss_epoch = []
+    site_val_loss_epoch = []
+    site_train_acc_epoch = []
+    site_val_acc_epoch = []
+    site_current_lr_epoch = []
+    
+    # Training loop for Site Predictor
+    for epoch in range(epochs_stage1):
+        site_current_lr_epoch.append(site_optimizer.param_groups[0]["lr"])
+        
+        # Training
+        site_predictor.train()
+        train_site_loss = 0.0
+        train_site_correct = 0
+        train_items = 0
+        
+        for i, (x, labels) in enumerate(train_data):
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            site_true = labels[:, 2].long().to(device, non_blocking=True)
+
+            site_optimizer.zero_grad(set_to_none=True)
+            
+            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                site_pred = site_predictor(tract_data)
+                site_loss = site_criterion(site_pred, site_true)
+            
+            site_loss.backward()
+            torch.nn.utils.clip_grad_norm_(site_predictor.parameters(), max_norm=max_grad_norm)
+            site_optimizer.step()
+            
+            train_items += batch_size
+            train_site_loss += site_loss.item() * batch_size
+            _, predicted_sites = torch.max(site_pred.data, 1)
+            train_site_correct += (predicted_sites == site_true).sum().item()
+            
+            if (i + 1) % 10 == 0:
+                print(f"\rEpoch {epoch+1}/{epochs_stage1} | Batch {i+1}/{len(train_data)} | Loss: {site_loss.item():.4f}", end="")
+        
+        site_predictor.eval()
+        val_site_loss = 0.0
+        val_site_correct = 0
+        val_items = 0
+        
+        with torch.no_grad():
+            for x, labels in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                site_true = labels[:, 2].long().to(device, non_blocking=True)
+                
+                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                    site_pred = site_predictor(tract_data)
+                    site_loss = site_criterion(site_pred, site_true)
+                
+                val_items += batch_size
+                val_site_loss += site_loss.item() * batch_size
+                _, predicted_sites = torch.max(site_pred.data, 1)
+                val_site_correct += (predicted_sites == site_true).sum().item()
+        
+        avg_train_site_loss = train_site_loss / train_items
+        avg_train_site_acc = (train_site_correct / train_items) * 100
+        avg_val_site_loss = val_site_loss / val_items
+        avg_val_site_acc = (val_site_correct / val_items) * 100
+        
+        site_train_loss_epoch.append(avg_train_site_loss)
+        site_val_loss_epoch.append(avg_val_site_loss)
+        site_train_acc_epoch.append(avg_train_site_acc)
+        site_val_acc_epoch.append(avg_val_site_acc)
+        
+        print(f"\nEpoch {epoch+1}/{epochs_stage1} | Train Loss: {avg_train_site_loss:.4f} | Train Acc: {avg_train_site_acc:.2f}% | Val Loss: {avg_val_site_loss:.4f} | Val Acc: {avg_val_site_acc:.2f}%")
+        
+        site_scheduler.step(avg_val_site_loss)
+        
+        if avg_val_site_loss < best_site_loss:
+            best_site_loss = avg_val_site_loss
+            best_site_state = site_predictor.state_dict()
+            torch.save(best_site_state, os.path.join(save_dir, "best_site_predictor_alternating.pth"))
+            print(f"  Saved best Site Predictor model with validation loss: {best_site_loss:.4f}")
+    
+    # Load best Site Predictor model
+    site_predictor.load_state_dict(best_site_state)
+    results["site_predictor"] = {
+        "best_val_loss": best_site_loss,
+        "train_loss_epoch": site_train_loss_epoch,
+        "val_loss_epoch": site_val_loss_epoch,
+        "train_acc_epoch": site_train_acc_epoch,
+        "val_acc_epoch": site_val_acc_epoch,
+        "current_lr_epoch": site_current_lr_epoch
+    }
+    
+    # ====================================================================
+    # STAGE 2: Alternating Adversarial Training
+    # ====================================================================
+    print(f"\n{'='*40}\nSTAGE 2: Alternating Adversarial Training\n{'='*40}")
+    print(f"Cycle structure: {cycle_length//2} epochs reconstruction+age, {cycle_length//2} epochs reconstruction+site")
+    
+    # Create combined model
+    from models import CombinedAE_Predictors
+    combined_model = CombinedAE_Predictors(vae_model, age_predictor, site_predictor, is_variational=is_variational)
+    combined_model = combined_model.to(device)
+    
+    # Training metrics
+    train_loss_epoch = []
+    val_loss_epoch = []
+    train_recon_loss_epoch = []
+    val_recon_loss_epoch = []
+    train_kl_loss_epoch = []
+    val_kl_loss_epoch = []
+    train_age_loss_epoch = []
+    val_age_loss_epoch = []
+    train_site_loss_epoch = []
+    val_site_loss_epoch = []
+    train_age_mae_epoch = []
+    val_age_mae_epoch = []
+    train_site_acc_epoch = []
+    val_site_acc_epoch = []
+    train_age_r2_epoch = []
+    val_age_r2_epoch = []
+    current_beta_epoch = []
+    current_grl_alpha_epoch = []
+    current_lr_epoch = []
+    training_phase_epoch = []  # Track which phase we're in
+    
+    best_val_metric_value = float("inf")
+    best_combined_state = None
+    best_epoch = 0
+
+    combined_optimizer = torch.optim.Adam([
+        {'params': vae_model.parameters(), 'lr': lr, 'name': 'vae'},
+        {'params': age_predictor.parameters(), 'lr': lr * 0.5, 'name': 'age'},
+        {'params': site_predictor.parameters(), 'lr': lr * 0.5, 'name': 'site'}
+    ])
+    combined_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        combined_optimizer, "min", patience=8, factor=0.7, verbose=False
+    )
+
+    # Alternating training loop
+    for epoch in range(epochs_stage2):
+        # Determine current phase within the cycle with smooth transitions
+        cycle_position = epoch % cycle_length
+        half_cycle = cycle_length // 2
+        transition_epochs = 2  # Number of epochs for smooth transition
+        
+        if cycle_position < half_cycle - transition_epochs:
+            # Phase A: Focus on reconstruction + age prediction
+            current_phase = "recon_age"
+            age_weight = 1.0
+            site_weight = 0.1  # Small weight to maintain some site awareness
+            current_grl_alpha = 0.0
+        elif cycle_position < half_cycle:
+            # Transition from A to B
+            current_phase = "transition_to_site"
+            transition_progress = (cycle_position - (half_cycle - transition_epochs)) / transition_epochs
+            age_weight = 1.0 - 0.8 * transition_progress  # Gradually reduce age focus
+            site_weight = 0.1 + 0.9 * transition_progress  # Gradually increase site focus
+            current_grl_alpha = grl_alpha_end * transition_progress * 0.5  # Gradual GRL ramp-up
+        elif cycle_position < cycle_length - transition_epochs:
+            # Phase B: Focus on reconstruction + site confusion
+            current_phase = "recon_site"
+            age_weight = 0.2  # Small weight to maintain some age awareness
+            site_weight = 1.0
+            phase_progress = (cycle_position - half_cycle) / (half_cycle - transition_epochs)
+            current_grl_alpha = grl_alpha_end * (0.5 + 0.5 * phase_progress)  # Continue ramping up
+        else:
+            # Transition from B to A
+            current_phase = "transition_to_age"
+            transition_progress = (cycle_position - (cycle_length - transition_epochs)) / transition_epochs
+            age_weight = 0.2 + 0.8 * transition_progress  # Gradually increase age focus
+            site_weight = 1.0 - 0.9 * transition_progress  # Gradually reduce site focus
+            current_grl_alpha = grl_alpha_end * (1.0 - 0.5 * transition_progress)  # Gradual GRL ramp-down
+        
+        training_phase_epoch.append(current_phase)
+        current_grl_alpha_epoch.append(current_grl_alpha)
+        current_lr_epoch.append(combined_optimizer.param_groups[0]["lr"])
+        
+        # KL Beta Calculation (same as before)
+        if is_variational and kl_annealing_duration > 0 and epoch >= kl_annealing_start_epoch:
+            annealing_epoch = epoch - kl_annealing_start_epoch
+            if annealing_epoch < kl_annealing_duration:
+                progress = annealing_epoch / kl_annealing_duration
+                sigmoid_val = 1 / (1 + np.exp(-10 * (progress - 0.5)))
+                kl_annealing_factor = kl_annealing_start + (1.0 - kl_annealing_start) * sigmoid_val
+            else:
+                kl_annealing_factor = 1.0
+        else:
+            kl_annealing_factor = 0.0 if epoch < kl_annealing_start_epoch else 1.0
+        
+        if is_variational:
+            current_beta = w_kl * kl_annealing_factor
+        else:
+            current_beta = 0.0
+        current_beta_epoch.append(current_beta)
+        
+        # Training
+        combined_model.train()
+        running_loss = 0.0
+        running_recon_loss = 0.0
+        running_kl_loss = 0.0
+        running_age_loss = 0.0
+        running_site_loss = 0.0
+        running_age_mae_sum = 0.0
+        running_site_correct = 0.0
+        train_items = 0
+        train_age_preds = []
+        train_age_trues = []
+        
+        for i, (x, labels) in enumerate(train_data):
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            age_true = labels[:, 0].float().unsqueeze(1).to(device)
+            site_true = labels[:, 2].long().to(device, non_blocking=True)
+            
+            combined_optimizer.zero_grad(set_to_none=True)
+            
+            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha)
+                
+                recon_loss = recon_criterion(x_hat, tract_data)
+                
+                if is_variational:
+                    kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                else:
+                    kl_loss = torch.tensor(0.0, device=device)
+                
+                age_loss = age_criterion(age_pred, age_true)
+                site_loss = site_criterion(site_pred, site_true)
+                
+                # Phase-specific loss calculation
+                if current_phase == "recon_age":
+                    # Focus on reconstruction and age prediction
+                    if is_variational:
+                        total_loss = (w_recon * recon_loss + 
+                                     current_beta * kl_loss + 
+                                     w_age * age_loss)
+                    else:
+                        total_loss = (w_recon * recon_loss + w_age * age_loss)
+                else:  # recon_site phase
+                    # Focus on reconstruction and site confusion
+                    if is_variational:
+                        total_loss = (w_recon * recon_loss + 
+                                     current_beta * kl_loss + 
+                                     w_site * site_loss)
+                    else:
+                        total_loss = (w_recon * recon_loss + w_site * site_loss)
+            
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                filter(lambda p: p.requires_grad, combined_model.parameters()), 
+                max_norm=max_grad_norm
+            )
+            combined_optimizer.step()
+            
+            # Accumulate metrics (same as before)
+            train_items += batch_size
+            running_loss += total_loss.item() * batch_size
+            running_recon_loss += recon_loss.item() * batch_size
+            running_kl_loss += kl_loss.item() * batch_size
+            running_age_loss += age_loss.item() * batch_size
+            running_site_loss += site_loss.item() * batch_size
+            running_age_mae_sum += age_loss.item() * batch_size
+            
+            train_age_preds.append(age_pred.detach())
+            train_age_trues.append(age_true.detach())
+            
+            _, predicted_sites = torch.max(site_pred.data, 1)
+            running_site_correct += (predicted_sites == site_true).sum().item()
+            
+            if (i + 1) % 10 == 0:
+                print(f"\rEpoch {epoch+1}/{epochs_stage2} ({current_phase}) | Batch {i+1}/{len(train_data)} | Loss: {total_loss.item():.4f}", end="")
+        
+        # Validation (same structure as training)
+        combined_model.eval()
+        running_val_loss = 0.0
+        running_val_recon_loss = 0.0
+        running_val_kl_loss = 0.0
+        running_val_age_loss = 0.0
+        running_val_site_loss = 0.0
+        running_val_age_mae_sum = 0.0
+        running_val_site_correct = 0.0
+        val_items = 0
+        val_age_preds = []
+        val_age_trues = []
+        
+        with torch.no_grad():
+            for x, labels in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                age_true = labels[:, 0].float().unsqueeze(1).to(device)
+                site_true = labels[:, 2].long().to(device, non_blocking=True)
+                
+                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                    x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha)
+                    
+                    recon_loss = recon_criterion(x_hat, tract_data)
+                    
+                    if is_variational:
+                        kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                    else:
+                        kl_loss = torch.tensor(0.0, device=device)
+                    
+                    age_loss = age_criterion(age_pred, age_true)
+                    site_loss = site_criterion(site_pred, site_true)
+                    
+                    # Use same phase-specific loss as training
+                    if current_phase == "recon_age":
+                        if is_variational:
+                            total_loss = (w_recon * recon_loss + 
+                                         current_beta * kl_loss + 
+                                         w_age * age_loss)
+                        else:
+                            total_loss = (w_recon * recon_loss + w_age * age_loss)
+                    else:
+                        if is_variational:
+                            total_loss = (w_recon * recon_loss + 
+                                         current_beta * kl_loss + 
+                                         w_site * site_loss)
+                        else:
+                            total_loss = (w_recon * recon_loss + w_site * site_loss)
+                
+                val_items += batch_size
+                running_val_loss += total_loss.item() * batch_size
+                running_val_recon_loss += recon_loss.item() * batch_size
+                running_val_kl_loss += kl_loss.item() * batch_size
+                running_val_age_loss += age_loss.item() * batch_size
+                running_val_site_loss += site_loss.item() * batch_size
+                running_val_age_mae_sum += age_loss.item() * batch_size
+                
+                val_age_preds.append(age_pred)
+                val_age_trues.append(age_true)
+                
+                _, predicted_sites = torch.max(site_pred.data, 1)
+                running_val_site_correct += (predicted_sites == site_true).sum().item()
+        
+        # Calculate metrics and save (same as before)
+        avg_train_loss = running_loss / train_items
+        avg_train_recon_loss = running_recon_loss / train_items
+        avg_train_kl_loss = running_kl_loss / train_items
+        avg_train_age_loss = running_age_loss / train_items
+        avg_train_site_loss = running_site_loss / train_items
+        avg_train_age_mae = running_age_mae_sum / train_items
+        avg_train_site_acc = (running_site_correct / train_items) * 100
+        
+        all_train_age_preds = torch.cat(train_age_preds)
+        all_train_age_trues = torch.cat(train_age_trues)
+        train_age_r2 = calculate_r2_score(all_train_age_trues, all_train_age_preds, verbose=False)
+        
+        avg_val_loss = running_val_loss / val_items
+        avg_val_recon_loss = running_val_recon_loss / val_items
+        avg_val_kl_loss = running_val_kl_loss / val_items
+        avg_val_age_loss = running_val_age_loss / val_items
+        avg_val_site_loss = running_val_site_loss / val_items
+        avg_val_age_mae = running_val_age_mae_sum / val_items
+        avg_val_site_acc = (running_val_site_correct / val_items) * 100
+        
+        all_val_age_preds = torch.cat(val_age_preds)
+        all_val_age_trues = torch.cat(val_age_trues)
+        val_age_r2 = calculate_r2_score(all_val_age_trues, all_val_age_preds, verbose=False)
+        
+        # Save metrics
+        train_loss_epoch.append(avg_train_loss)
+        train_recon_loss_epoch.append(avg_train_recon_loss)
+        train_kl_loss_epoch.append(avg_train_kl_loss)
+        train_age_loss_epoch.append(avg_train_age_loss)
+        train_site_loss_epoch.append(avg_train_site_loss)
+        train_age_mae_epoch.append(avg_train_age_mae)
+        train_site_acc_epoch.append(avg_train_site_acc)
+        train_age_r2_epoch.append(train_age_r2)
+        
+        val_loss_epoch.append(avg_val_loss)
+        val_recon_loss_epoch.append(avg_val_recon_loss)
+        val_kl_loss_epoch.append(avg_val_kl_loss)
+        val_age_loss_epoch.append(avg_val_age_loss)
+        val_site_loss_epoch.append(avg_val_site_loss)
+        val_age_mae_epoch.append(avg_val_age_mae)
+        val_site_acc_epoch.append(avg_val_site_acc)
+        val_age_r2_epoch.append(val_age_r2)
+        
+        # Monitor and save best model
+        current_epoch_val_metrics = {
+            "val_loss": avg_val_loss,
+            "val_age_mae": avg_val_age_mae,
+        }
+        current_val_metric = current_epoch_val_metrics.get(val_metric_to_monitor, avg_val_loss)
+        
+        # Print progress with phase information
+        print(f"\nEpoch {epoch+1}/{epochs_stage2} ({current_phase}) | Train Loss: {avg_train_loss:.4f} | " +
+              f"Val Loss: {avg_val_loss:.4f} | Val Age MAE: {avg_val_age_mae:.4f} | " +
+              f"Val Age R²: {val_age_r2:.4f} | Val Site Acc: {avg_val_site_acc:.2f}%")
+        print(f"  Recon RMSE: {np.sqrt(avg_val_recon_loss):.4f} | GRL Alpha: {current_grl_alpha:.2f}")
+        
+        combined_scheduler.step(current_val_metric)
+        
+        # Save best model
+        if current_val_metric < best_val_metric_value:
+            best_val_metric_value = current_val_metric
+            best_combined_state = combined_model.state_dict()
+            best_epoch = epoch
+            
+            model_path = os.path.join(save_dir, "best_alternating_model.pth")
+            torch.save(best_combined_state, model_path)
+            print(f"  Saved best alternating model with {val_metric_to_monitor}: {best_val_metric_value:.4f}")
+        
+        # Periodic saving
+        if (epoch + 1) % periodic_save_interval == 0:
+            periodic_path = os.path.join(save_dir, f"alternating_model_epoch_{epoch+1}.pth")
+            torch.save(combined_model.state_dict(), periodic_path)
+    
+    # Load best model
+    combined_model.load_state_dict(best_combined_state)
+    
+    # Return results
+    combined_results = {
+        "train_loss_epoch": train_loss_epoch,
+        "val_loss_epoch": val_loss_epoch,
+        "train_recon_loss_epoch": train_recon_loss_epoch,
+        "val_recon_loss_epoch": val_recon_loss_epoch,
+        "train_kl_loss_epoch": train_kl_loss_epoch,
+        "val_kl_loss_epoch": val_kl_loss_epoch,
+        "train_age_loss_epoch": train_age_loss_epoch,
+        "val_age_loss_epoch": val_age_loss_epoch,
+        "train_site_loss_epoch": train_site_loss_epoch,
+        "val_site_loss_epoch": val_site_loss_epoch,
+        "train_age_mae_epoch": train_age_mae_epoch,
+        "val_age_mae_epoch": val_age_mae_epoch,
+        "train_site_acc_epoch": train_site_acc_epoch,
+        "val_site_acc_epoch": val_site_acc_epoch,
+        "train_age_r2_epoch": train_age_r2_epoch,
+        "val_age_r2_epoch": val_age_r2_epoch,
+        "current_beta_epoch": current_beta_epoch,
+        "current_grl_alpha_epoch": current_grl_alpha_epoch,
+        "current_lr_epoch": current_lr_epoch,
+        "training_phase_epoch": training_phase_epoch,  # New: track which phase each epoch was
+        f"best_{val_metric_to_monitor}": best_val_metric_value,
+        "best_epoch": best_epoch,
+        "model_path": os.path.join(save_dir, "best_alternating_model.pth")
+    }
+    
+    results["alternating"] = combined_results
+    
+    print(f"\n{'='*40}\nAlternating training complete!\n{'='*40}")
+    print(f"Best {val_metric_to_monitor}: {best_val_metric_value:.4f}")
+    
+    return results
+
+def train_vae_age_site_alternating_improved(
+    vae_model,
+    age_predictor,
+    site_predictor,
+    train_data,
+    val_data,
+    epochs_stage1=100,  # For independent training of each model
+    epochs_stage2=200,  # For alternating adversarial training
+    cycle_length=20,    # Number of epochs per alternating cycle
+    lr=0.001,
+    device="cuda",
+    max_grad_norm=1.0,
+    w_recon=1.0,
+    w_kl=1.0,
+    w_age=1.0,
+    w_site=1.0,
+    kl_annealing_start_epoch=0,
+    kl_annealing_duration=50,
+    kl_annealing_start=0.001,
+    grl_alpha_start=0.0,
+    grl_alpha_end=2.5,
+    grl_alpha_epochs=100,
+    save_dir="staged_models",
+    val_metric_to_monitor="val_age_mae",
+    save_predictions_interval=50,
+    periodic_save_interval=50,
+    is_variational=True,
+    adaptive_cycle_length=True
+):
+    import os, sys
+    import numpy as np
+    import torch
+    print(f"DEBUG: Starting train_vae_age_site_alternating_improved function")
+    print(f"DEBUG: Training configuration - epochs_stage1={epochs_stage1}, epochs_stage2={epochs_stage2}, device={device}")
+    print(f"DEBUG: Autoencoder type - {'Variational' if is_variational else 'Non-variational'}")
+    print(f"DEBUG: KL annealing config - start_epoch={kl_annealing_start_epoch}, duration={kl_annealing_duration}, start_value={kl_annealing_start}")
+    print(f"DEBUG: Data loaders - train_data has {len(train_data)} batches, val_data has {len(val_data)} batches")
+    sys.stdout.flush()
+    
+    os.makedirs(save_dir, exist_ok=True)
+    print(f"DEBUG: Created directory {save_dir}")
+    sys.stdout.flush()
+    
+    torch.backends.cudnn.benchmark = True
+    
+    # Move models to device
+    try:
+        print(f"DEBUG: Moving models to device {device}")
+        vae_model = vae_model.to(device)
+        age_predictor = age_predictor.to(device)
+        site_predictor = site_predictor.to(device)
+        print(f"DEBUG: Successfully moved models to {device}")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"ERROR moving models to device: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        sys.stdout.flush()
+        raise
+    
+    # Set up loss functions
+    print(f"DEBUG: Setting up loss functions")
+    sys.stdout.flush()
+    recon_criterion = torch.nn.MSELoss(reduction="mean")
+    age_criterion = torch.nn.L1Loss(reduction="mean")  # MAE
+    site_criterion = torch.nn.CrossEntropyLoss(reduction="mean")
+    
+    results = {}
+    
+    # ====================================================================
+    # STAGE 1: Train each model independently on raw data
+    # ====================================================================
+    print(f"\n{'='*40}\nSTAGE 1: Training models independently\n{'='*40}")
+    sys.stdout.flush()
+    
+    # --- STEP 1: Train VAE for reconstruction ---
+    print(f"\n{'-'*40}\nTraining {'VAE' if is_variational else 'Autoencoder'} for reconstruction...\n{'-'*40}")
+    sys.stdout.flush()
+    vae_optimizer = torch.optim.Adam(vae_model.parameters(), lr=lr)
+    vae_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(vae_optimizer, "min", patience=10, factor=0.5, verbose=True)
+    best_vae_loss = float("inf")
+    best_vae_state = None
+    vae_train_loss_epoch = []
+    vae_val_loss_epoch = []
+    vae_train_recon_loss_epoch = []
+    vae_val_recon_loss_epoch = []
+    vae_train_kl_loss_epoch = []
+    vae_val_kl_loss_epoch = []
+    vae_current_beta_epoch = []
+    vae_current_lr_epoch = []
+    for epoch in range(epochs_stage1):
+        # KL Beta Calculation
+        if kl_annealing_duration > 0 and epoch >= kl_annealing_start_epoch:
+            annealing_epoch = epoch - kl_annealing_start_epoch
+            if annealing_epoch < kl_annealing_duration:
+                progress = annealing_epoch / kl_annealing_duration
+                sigmoid_val = 1 / (1 + np.exp(-10 * (progress - 0.5)))
+                kl_annealing_factor = kl_annealing_start + (1.0 - kl_annealing_start) * sigmoid_val
+            else:
+                kl_annealing_factor = 1.0
+        else:
+            kl_annealing_factor = 0.0 if epoch < kl_annealing_start_epoch else 1.0
+        current_beta = w_kl * kl_annealing_factor
+        vae_current_beta_epoch.append(current_beta)
+        vae_current_lr_epoch.append(vae_optimizer.param_groups[0]["lr"])
+        vae_model.train()
+        train_recon_loss = 0.0
+        train_kl_loss = 0.0
+        train_total_loss = 0.0
+        train_items = 0
+        for x, _ in train_data:
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            vae_optimizer.zero_grad(set_to_none=True)
+            with torch.amp.autocast(device_type="cuda"):
+                if is_variational:
+                    x_hat, mean, logvar = vae_model(tract_data)
+                    recon_loss = recon_criterion(x_hat, tract_data)
+                    kl_loss_raw = kl_divergence_loss(mean, logvar) / batch_size
+                    weighted_kl_loss = current_beta * kl_loss_raw
+                    total_loss = recon_loss + weighted_kl_loss
+                    kl_loss = kl_loss_raw
+                else:
+                    x_hat = vae_model(tract_data)
+                    recon_loss = recon_criterion(x_hat, tract_data)
+                    kl_loss = torch.tensor(0.0, device=device)
+                    total_loss = recon_loss
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(vae_model.parameters(), max_norm=max_grad_norm)
+            vae_optimizer.step()
+            train_items += batch_size
+            train_recon_loss += recon_loss.item() * batch_size
+            train_kl_loss += kl_loss.item() * batch_size
+            train_total_loss += total_loss.item() * batch_size
+        avg_train_recon_loss = train_recon_loss / train_items
+        avg_train_kl_loss = train_kl_loss / train_items
+        avg_train_total_loss = train_total_loss / train_items
+        vae_train_loss_epoch.append(avg_train_total_loss)
+        vae_train_recon_loss_epoch.append(avg_train_recon_loss)
+        vae_train_kl_loss_epoch.append(avg_train_kl_loss)
+        vae_model.eval()
+        val_recon_loss = 0.0
+        val_kl_loss = 0.0
+        val_total_loss = 0.0
+        val_items = 0
+        with torch.no_grad():
+            for x, _ in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                with torch.amp.autocast(device_type="cuda"):
+                    if is_variational:
+                        x_hat, mean, logvar = vae_model(tract_data)
+                        recon_loss = recon_criterion(x_hat, tract_data)
+                        kl_loss_raw = kl_divergence_loss(mean, logvar) / batch_size
+                        weighted_kl_loss = current_beta * kl_loss_raw
+                        total_loss = recon_loss + weighted_kl_loss
+                        kl_loss = kl_loss_raw
+                    else:
+                        x_hat = vae_model(tract_data)
+                        recon_loss = recon_criterion(x_hat, tract_data)
+                        kl_loss = torch.tensor(0.0, device=device)
+                        total_loss = recon_loss
+                val_items += batch_size
+                val_recon_loss += recon_loss.item() * batch_size
+                val_kl_loss += kl_loss.item() * batch_size
+                val_total_loss += total_loss.item() * batch_size
+        avg_val_recon_loss = val_recon_loss / val_items
+        avg_val_kl_loss = val_kl_loss / val_items
+        avg_val_total_loss = val_total_loss / val_items
+        vae_val_loss_epoch.append(avg_val_total_loss)
+        vae_val_recon_loss_epoch.append(avg_val_recon_loss)
+        vae_val_kl_loss_epoch.append(avg_val_kl_loss)
+        vae_scheduler.step(avg_val_total_loss)
+        if avg_val_total_loss < best_vae_loss:
+            best_vae_loss = avg_val_total_loss
+            best_vae_state = vae_model.state_dict()
+            torch.save(best_vae_state, os.path.join(save_dir, "best_vae_alternating_improved.pth"))
+        if (epoch + 1) % periodic_save_interval == 0:
+            periodic_vae_path = os.path.join(save_dir, f"vae_alternating_improved_epoch_{epoch+1}.pth")
+            torch.save(vae_model.state_dict(), periodic_vae_path)
+    vae_model.load_state_dict(best_vae_state)
+    results["vae"] = {
+        "best_val_loss": best_vae_loss,
+        "train_loss_epoch": vae_train_loss_epoch,
+        "val_loss_epoch": vae_val_loss_epoch,
+        "train_recon_loss_epoch": vae_train_recon_loss_epoch,
+        "val_recon_loss_epoch": vae_val_recon_loss_epoch,
+        "train_kl_loss_epoch": vae_train_kl_loss_epoch,
+        "val_kl_loss_epoch": vae_val_kl_loss_epoch,
+        "current_beta_epoch": vae_current_beta_epoch,
+        "current_lr_epoch": vae_current_lr_epoch
+    }
+    # --- STEP 2: Train Age Predictor on raw data ---
+    print(f"\n{'-'*40}\nTraining Age Predictor on raw data...\n{'-'*40}")
+    age_optimizer = torch.optim.Adam(age_predictor.parameters(), lr=lr)
+    age_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(age_optimizer, "min", patience=10, factor=0.5, verbose=True)
+    best_age_mae = float("inf")
+    best_age_state = None
+    age_train_loss_epoch = []
+    age_val_loss_epoch = []
+    age_train_r2_epoch = []
+    age_val_r2_epoch = []
+    age_current_lr_epoch = []
+    for epoch in range(epochs_stage1):
+        age_current_lr_epoch.append(age_optimizer.param_groups[0]["lr"])
+        age_predictor.train()
+        train_age_loss = 0.0
+        train_predictions = []
+        train_targets = []
+        train_items = 0
+        for x, labels in train_data:
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            age_true = labels[:, 0].float().unsqueeze(1).to(device)
+            age_optimizer.zero_grad(set_to_none=True)
+            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                age_pred = age_predictor(tract_data)
+                age_loss = age_criterion(age_pred, age_true)
+            age_loss.backward()
+            torch.nn.utils.clip_grad_norm_(age_predictor.parameters(), max_norm=max_grad_norm)
+            age_optimizer.step()
+            train_items += batch_size
+            train_age_loss += age_loss.item() * batch_size
+            train_predictions.append(age_pred.detach())
+            train_targets.append(age_true.detach())
+        all_train_preds = torch.cat(train_predictions)
+        all_train_targets = torch.cat(train_targets)
+        train_r2 = calculate_r2_score(all_train_targets, all_train_preds, verbose=(epoch < 5))
+        avg_train_age_loss = train_age_loss / train_items
+        age_predictor.eval()
+        val_age_loss = 0.0
+        val_predictions = []
+        val_targets = []
+        val_items = 0
+        with torch.no_grad():
+            for x, labels in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                age_true = labels[:, 0].float().unsqueeze(1).to(device)
+                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                    age_pred = age_predictor(tract_data)
+                    age_loss = age_criterion(age_pred, age_true)
+                val_items += batch_size
+                val_age_loss += age_loss.item() * batch_size
+                val_predictions.append(age_pred)
+                val_targets.append(age_true)
+        all_val_preds = torch.cat(val_predictions)
+        all_val_targets = torch.cat(val_targets)
+        val_r2 = calculate_r2_score(all_val_targets, all_val_preds, verbose=(epoch < 5))
+        avg_val_age_loss = val_age_loss / val_items
+        age_train_loss_epoch.append(avg_train_age_loss)
+        age_val_loss_epoch.append(avg_val_age_loss)
+        age_train_r2_epoch.append(train_r2)
+        age_val_r2_epoch.append(val_r2)
+        age_scheduler.step(avg_val_age_loss)
+        if avg_val_age_loss < best_age_mae:
+            best_age_mae = avg_val_age_loss
+            best_age_state = age_predictor.state_dict()
+            torch.save(best_age_state, os.path.join(save_dir, "best_age_predictor_alternating_improved.pth"))
+    age_predictor.load_state_dict(best_age_state)
+    results["age_predictor"] = {
+        "best_val_mae": best_age_mae,
+        "train_loss_epoch": age_train_loss_epoch,
+        "val_loss_epoch": age_val_loss_epoch,
+        "train_r2_epoch": age_train_r2_epoch,
+        "val_r2_epoch": age_val_r2_epoch,
+        "current_lr_epoch": age_current_lr_epoch
+    }
+    # --- STEP 3: Train Site Predictor on raw data ---
+    print(f"\n{'-'*40}\nTraining Site Predictor on raw data...\n{'-'*40}")
+    site_optimizer = torch.optim.Adam(site_predictor.parameters(), lr=lr)
+    site_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(site_optimizer, "min", patience=10, factor=0.5, verbose=True)
+    best_site_loss = float("inf")
+    best_site_state = None
+    site_train_loss_epoch = []
+    site_val_loss_epoch = []
+    site_train_acc_epoch = []
+    site_val_acc_epoch = []
+    site_current_lr_epoch = []
+    for epoch in range(epochs_stage1):
+        site_current_lr_epoch.append(site_optimizer.param_groups[0]["lr"])
+        site_predictor.train()
+        train_site_loss = 0.0
+        train_site_correct = 0
+        train_items = 0
+        for x, labels in train_data:
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            site_true = labels[:, 2].long().to(device, non_blocking=True)
+            site_optimizer.zero_grad(set_to_none=True)
+            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                site_pred = site_predictor(tract_data)
+                site_loss = site_criterion(site_pred, site_true)
+            site_loss.backward()
+            torch.nn.utils.clip_grad_norm_(site_predictor.parameters(), max_norm=max_grad_norm)
+            site_optimizer.step()
+            train_items += batch_size
+            train_site_loss += site_loss.item() * batch_size
+            _, predicted_sites = torch.max(site_pred.data, 1)
+            train_site_correct += (predicted_sites == site_true).sum().item()
+        avg_train_site_loss = train_site_loss / train_items
+        avg_train_site_acc = (train_site_correct / train_items) * 100
+        site_predictor.eval()
+        val_site_loss = 0.0
+        val_site_correct = 0
+        val_items = 0
+        with torch.no_grad():
+            for x, labels in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                site_true = labels[:, 2].long().to(device, non_blocking=True)
+                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                    site_pred = site_predictor(tract_data)
+                    site_loss = site_criterion(site_pred, site_true)
+                val_items += batch_size
+                val_site_loss += site_loss.item() * batch_size
+                _, predicted_sites = torch.max(site_pred.data, 1)
+                val_site_correct += (predicted_sites == site_true).sum().item()
+        avg_val_site_loss = val_site_loss / val_items
+        avg_val_site_acc = (val_site_correct / val_items) * 100
+        site_train_loss_epoch.append(avg_train_site_loss)
+        site_val_loss_epoch.append(avg_val_site_loss)
+        site_train_acc_epoch.append(avg_train_site_acc)
+        site_val_acc_epoch.append(avg_val_site_acc)
+        site_scheduler.step(avg_val_site_loss)
+        if avg_val_site_loss < best_site_loss:
+            best_site_loss = avg_val_site_loss
+            best_site_state = site_predictor.state_dict()
+            torch.save(best_site_state, os.path.join(save_dir, "best_site_predictor_alternating_improved.pth"))
+    site_predictor.load_state_dict(best_site_state)
+    results["site_predictor"] = {
+        "best_val_loss": best_site_loss,
+        "train_loss_epoch": site_train_loss_epoch,
+        "val_loss_epoch": site_val_loss_epoch,
+        "train_acc_epoch": site_train_acc_epoch,
+        "val_acc_epoch": site_val_acc_epoch,
+        "current_lr_epoch": site_current_lr_epoch
+    }
+    # ====================================================================
+    # STAGE 2: Alternating Adversarial Training with Adaptive Cycles
+    # ====================================================================
+    print(f"\n{'='*40}\nSTAGE 2: Alternating Adversarial Training (Improved)\n{'='*40}")
+    from models import CombinedAE_Predictors
+    combined_model = CombinedAE_Predictors(vae_model, age_predictor, site_predictor, is_variational=is_variational)
+    combined_model = combined_model.to(device)
+    combined_optimizer = torch.optim.Adam([
+        {'params': vae_model.parameters(), 'lr': lr, 'name': 'vae'},
+        {'params': age_predictor.parameters(), 'lr': lr * 0.5, 'name': 'age'},
+        {'params': site_predictor.parameters(), 'lr': lr * 0.5, 'name': 'site'}
+    ])
+    combined_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        combined_optimizer, "min", patience=8, factor=0.7, verbose=False
+    )
+    def adjust_learning_rates(optimizer, phase, age_weight, site_weight, base_lr):
+        if "age" in phase:
+            optimizer.param_groups[0]['lr'] = base_lr
+            optimizer.param_groups[1]['lr'] = base_lr * age_weight
+            optimizer.param_groups[2]['lr'] = base_lr * site_weight * 0.2
+        else:
+            optimizer.param_groups[0]['lr'] = base_lr
+            optimizer.param_groups[1]['lr'] = base_lr * age_weight * 0.2
+            optimizer.param_groups[2]['lr'] = base_lr * site_weight
+    phase_performance = {"recon_age": [], "recon_site": []}
+    current_cycle_length = cycle_length
+    cycles_without_improvement = 0
+    train_loss_epoch = []
+    val_loss_epoch = []
+    train_recon_loss_epoch = []
+    val_recon_loss_epoch = []
+    train_kl_loss_epoch = []
+    val_kl_loss_epoch = []
+    train_age_loss_epoch = []
+    val_age_loss_epoch = []
+    train_site_loss_epoch = []
+    val_site_loss_epoch = []
+    train_age_mae_epoch = []
+    val_age_mae_epoch = []
+    train_site_acc_epoch = []
+    val_site_acc_epoch = []
+    train_age_r2_epoch = []
+    val_age_r2_epoch = []
+    current_beta_epoch = []
+    current_grl_alpha_epoch = []
+    current_lr_epoch = []
+    training_phase_epoch = []
+    age_weight_epoch = []
+    site_weight_epoch = []
+    cycle_length_epoch = []
+    best_val_metric_value = float("inf")
+    best_combined_state = None
+    best_epoch = 0
+    for epoch in range(epochs_stage2):
+        cycle_position = epoch % current_cycle_length
+        half_cycle = current_cycle_length // 2
+        transition_epochs = 2
+        if cycle_position < half_cycle - transition_epochs:
+            current_phase = "recon_age"
+            age_weight = w_age
+            site_weight = w_site * 0.1
+            current_grl_alpha = 0.0
+        elif cycle_position < half_cycle:
+            current_phase = "transition_to_site"
+            transition_progress = (cycle_position - (half_cycle - transition_epochs)) / transition_epochs
+            age_weight = w_age * (1.0 - 0.7 * transition_progress)
+            site_weight = w_site * (0.1 + 0.9 * transition_progress)
+            current_grl_alpha = grl_alpha_end * transition_progress * 0.3
+        elif cycle_position < current_cycle_length - transition_epochs:
+            current_phase = "recon_site"
+            age_weight = w_age * 0.3
+            site_weight = w_site
+            phase_progress = (cycle_position - half_cycle) / (half_cycle - transition_epochs)
+            current_grl_alpha = grl_alpha_end * (0.3 + 0.7 * phase_progress)
+        else:
+            current_phase = "transition_to_age"
+            transition_progress = (cycle_position - (current_cycle_length - transition_epochs)) / transition_epochs
+            age_weight = w_age * (0.3 + 0.7 * transition_progress)
+            site_weight = w_site * (1.0 - 0.9 * transition_progress)
+            current_grl_alpha = grl_alpha_end * (1.0 - 0.7 * transition_progress)
+        adjust_learning_rates(combined_optimizer, current_phase, age_weight, site_weight, lr)
+        training_phase_epoch.append(current_phase)
+        current_grl_alpha_epoch.append(current_grl_alpha)
+        current_lr_epoch.append(combined_optimizer.param_groups[0]["lr"])
+        age_weight_epoch.append(age_weight)
+        site_weight_epoch.append(site_weight)
+        cycle_length_epoch.append(current_cycle_length)
+        if is_variational and kl_annealing_duration > 0 and epoch >= kl_annealing_start_epoch:
+            annealing_epoch = epoch - kl_annealing_start_epoch
+            if annealing_epoch < kl_annealing_duration:
+                progress = annealing_epoch / kl_annealing_duration
+                sigmoid_val = 1 / (1 + np.exp(-10 * (progress - 0.5)))
+                kl_annealing_factor = kl_annealing_start + (1.0 - kl_annealing_start) * sigmoid_val
+            else:
+                kl_annealing_factor = 1.0
+        else:
+            kl_annealing_factor = 0.0 if epoch < kl_annealing_start_epoch else 1.0
+        if is_variational:
+            current_beta = w_kl * kl_annealing_factor
+        else:
+            current_beta = 0.0
+        current_beta_epoch.append(current_beta)
+        combined_model.train()
+        running_loss = 0.0
+        running_recon_loss = 0.0
+        running_kl_loss = 0.0
+        running_age_loss = 0.0
+        running_site_loss = 0.0
+        running_age_mae_sum = 0.0
+        running_site_correct = 0.0
+        train_items = 0
+        train_age_preds = []
+        train_age_trues = []
+        all_train_site_true = []
+        all_train_site_pred = []
+        for x, labels in train_data:
+            batch_size = x.size(0)
+            tract_data = x.to(device, non_blocking=True)
+            age_true = labels[:, 0].float().unsqueeze(1).to(device)
+            site_true = labels[:, 2].long().to(device, non_blocking=True)
+            combined_optimizer.zero_grad(set_to_none=True)
+            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha)
+                recon_loss = recon_criterion(x_hat, tract_data)
+                if is_variational:
+                    kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                else:
+                    kl_loss = torch.tensor(0.0, device=device)
+                age_loss = age_criterion(age_pred, age_true)
+                site_loss = site_criterion(site_pred, site_true)
+                if is_variational:
+                    total_loss = (w_recon * recon_loss + 
+                                 current_beta * kl_loss + 
+                                 age_weight * age_loss + 
+                                 site_weight * site_loss)
+                else:
+                    total_loss = (w_recon * recon_loss + 
+                                 age_weight * age_loss + 
+                                 site_weight * site_loss)
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(combined_model.parameters(), max_norm=max_grad_norm)
+            combined_optimizer.step()
+            train_items += batch_size
+            running_loss += total_loss.item() * batch_size
+            running_recon_loss += recon_loss.item() * batch_size
+            running_kl_loss += kl_loss.item() * batch_size
+            running_age_loss += age_loss.item() * batch_size
+            running_site_loss += site_loss.item() * batch_size
+            running_age_mae_sum += age_loss.item() * batch_size
+            train_age_preds.append(age_pred.detach())
+            train_age_trues.append(age_true.detach())
+            _, predicted_sites = torch.max(site_pred.data, 1)
+            running_site_correct += (predicted_sites == site_true).sum().item()
+            all_train_site_true.append(site_true.detach().cpu())
+            all_train_site_pred.append(predicted_sites.detach().cpu())
+        combined_model.eval()
+        running_val_loss = 0.0
+        running_val_recon_loss = 0.0
+        running_val_kl_loss = 0.0
+        running_val_age_loss = 0.0
+        running_val_site_loss = 0.0
+        running_val_age_mae_sum = 0.0
+        running_val_site_correct = 0.0
+        val_items = 0
+        val_age_preds = []
+        val_age_trues = []
+        all_val_site_true = []
+        all_val_site_pred = []
+        with torch.no_grad():
+            for x, labels in val_data:
+                batch_size = x.size(0)
+                tract_data = x.to(device, non_blocking=True)
+                age_true = labels[:, 0].float().unsqueeze(1).to(device)
+                site_true = labels[:, 2].long().to(device, non_blocking=True)
+                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                    x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha)
+                    recon_loss = recon_criterion(x_hat, tract_data)
+                    if is_variational:
+                        kl_loss = kl_divergence_loss(mean, logvar) / batch_size
+                    else:
+                        kl_loss = torch.tensor(0.0, device=device)
+                    age_loss = age_criterion(age_pred, age_true)
+                    site_loss = site_criterion(site_pred, site_true)
+                    if is_variational:
+                        total_loss = (w_recon * recon_loss + 
+                                     current_beta * kl_loss + 
+                                     age_weight * age_loss + 
+                                     site_weight * site_loss)
+                    else:
+                        total_loss = (w_recon * recon_loss + 
+                                     age_weight * age_loss + 
+                                     site_weight * site_loss)
+                val_items += batch_size
+                running_val_loss += total_loss.item() * batch_size
+                running_val_recon_loss += recon_loss.item() * batch_size
+                running_val_kl_loss += kl_loss.item() * batch_size
+                running_val_age_loss += age_loss.item() * batch_size
+                running_val_site_loss += site_loss.item() * batch_size
+                running_val_age_mae_sum += age_loss.item() * batch_size
+                val_age_preds.append(age_pred)
+                val_age_trues.append(age_true)
+                _, predicted_sites = torch.max(site_pred.data, 1)
+                running_val_site_correct += (predicted_sites == site_true).sum().item()
+                all_val_site_true.append(site_true.cpu())
+                all_val_site_pred.append(predicted_sites.cpu())
+        # Save site prediction data for confusion matrix
+        if epoch == 0 or (epoch + 1) % save_predictions_interval == 0 or epoch == epochs_stage2 - 1:
+            train_site_true = torch.cat(all_train_site_true).numpy()
+            train_site_pred = torch.cat(all_train_site_pred).numpy()
+            val_site_true = torch.cat(all_val_site_true).numpy()
+            val_site_pred = torch.cat(all_val_site_pred).numpy()
+            save_site_predictions(train_site_true, train_site_pred, epoch+1, save_dir, prefix='train')
+            save_site_predictions(val_site_true, val_site_pred, epoch+1, save_dir, prefix='val')
+            # --- NEW: Save confusion matrix PNGs for this epoch ---
+            import numpy as np
+            import os
+            import matplotlib.pyplot as plt
+            from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+            # Train confusion matrix
+            cm_train = confusion_matrix(train_site_true, train_site_pred, normalize='true')
+            labels_train = [f"Site {i}" for i in range(cm_train.shape[0])]
+            disp_train = ConfusionMatrixDisplay(confusion_matrix=cm_train, display_labels=labels_train)
+            fig_train, ax_train = plt.subplots(figsize=(8, 6))
+            disp_train.plot(ax=ax_train, cmap='Blues', values_format='.2f')
+            plt.title(f'Train Confusion Matrix - Epoch {epoch+1}')
+            plot_dir = os.path.join(save_dir, 'confusion_matrices')
+            os.makedirs(plot_dir, exist_ok=True)
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f'train_confusion_matrix_epoch_{epoch+1}.png'))
+            plt.close(fig_train)
+            # Val confusion matrix
+            cm_val = confusion_matrix(val_site_true, val_site_pred, normalize='true')
+            labels_val = [f"Site {i}" for i in range(cm_val.shape[0])]
+            disp_val = ConfusionMatrixDisplay(confusion_matrix=cm_val, display_labels=labels_val)
+            fig_val, ax_val = plt.subplots(figsize=(8, 6))
+            disp_val.plot(ax=ax_val, cmap='Blues', values_format='.2f')
+            plt.title(f'Val Confusion Matrix - Epoch {epoch+1}')
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f'val_confusion_matrix_epoch_{epoch+1}.png'))
+            plt.close(fig_val)
+        avg_train_loss = running_loss / train_items
+        avg_train_recon_loss = running_recon_loss / train_items
+        avg_train_kl_loss = running_kl_loss / train_items
+        avg_train_age_loss = running_age_loss / train_items
+        avg_train_site_loss = running_site_loss / train_items
+        avg_train_age_mae = running_age_mae_sum / train_items
+        avg_train_site_acc = (running_site_correct / train_items) * 100
+        all_train_age_preds = torch.cat(train_age_preds)
+        all_train_age_trues = torch.cat(train_age_trues)
+        train_age_r2 = calculate_r2_score(all_train_age_trues, all_train_age_preds, verbose=(epoch < 5))
+        avg_val_loss = running_val_loss / val_items
+        avg_val_recon_loss = running_val_recon_loss / val_items
+        avg_val_kl_loss = running_val_kl_loss / val_items
+        avg_val_age_loss = running_val_age_loss / val_items
+        avg_val_site_loss = running_val_site_loss / val_items
+        avg_val_age_mae = running_val_age_mae_sum / val_items
+        avg_val_site_acc = (running_val_site_correct / val_items) * 100
+        all_val_age_preds = torch.cat(val_age_preds)
+        all_val_age_trues = torch.cat(val_age_trues)
+        val_age_r2 = calculate_r2_score(all_val_age_trues, all_val_age_preds, verbose=(epoch < 5))
+        train_loss_epoch.append(avg_train_loss)
+        train_recon_loss_epoch.append(avg_train_recon_loss)
+        train_kl_loss_epoch.append(avg_train_kl_loss)
+        train_age_loss_epoch.append(avg_train_age_loss)
+        train_site_loss_epoch.append(avg_train_site_loss)
+        train_age_mae_epoch.append(avg_train_age_mae)
+        train_site_acc_epoch.append(avg_train_site_acc)
+        train_age_r2_epoch.append(train_age_r2)
+        val_loss_epoch.append(avg_val_loss)
+        val_recon_loss_epoch.append(avg_val_recon_loss)
+        val_kl_loss_epoch.append(avg_val_kl_loss)
+        val_age_loss_epoch.append(avg_val_age_loss)
+        val_site_loss_epoch.append(avg_val_site_loss)
+        val_age_mae_epoch.append(avg_val_age_mae)
+        val_site_acc_epoch.append(avg_val_site_acc)
+        val_age_r2_epoch.append(val_age_r2)
+        current_epoch_val_metrics = {
+            "val_loss": avg_val_loss,
+            "val_age_mae": avg_val_age_mae,
+        }
+        current_val_metric = current_epoch_val_metrics.get(val_metric_to_monitor, avg_val_loss)
+        print(f"\nEpoch {epoch+1}/{epochs_stage2} ({current_phase}) | Cycle: {current_cycle_length} | " +
+              f"Age Weight: {age_weight:.2f} | Site Weight: {site_weight:.2f}")
+        print(f"  Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        print(f"  Val Age MAE: {avg_val_age_mae:.4f} | Val Age R²: {val_age_r2:.4f} | Val Site Acc: {avg_val_site_acc:.2f}%")
+        print(f"  Recon RMSE: {np.sqrt(avg_val_recon_loss):.4f} | GRL Alpha: {current_grl_alpha:.2f}")
+        combined_scheduler.step(current_val_metric)
+        if current_val_metric < best_val_metric_value:
+            best_val_metric_value = current_val_metric
+            best_combined_state = combined_model.state_dict()
+            best_epoch = epoch
+            model_path = os.path.join(save_dir, "best_alternating_improved_model.pth")
+            torch.save(best_combined_state, model_path)
+        if (epoch + 1) % periodic_save_interval == 0:
+            periodic_path = os.path.join(save_dir, f"alternating_improved_model_epoch_{epoch+1}.pth")
+            torch.save(combined_model.state_dict(), periodic_path)
+        # Adaptive cycle length
+        if adaptive_cycle_length and (epoch + 1) % current_cycle_length == 0:
+            recent_age_perf = phase_performance["recon_age"][-5:] if len(phase_performance["recon_age"]) >= 5 else phase_performance["recon_age"]
+            recent_site_perf = phase_performance["recon_site"][-5:] if len(phase_performance["recon_site"]) >= 5 else phase_performance["recon_site"]
+            if len(recent_age_perf) >= 3 and len(recent_site_perf) >= 3:
+                age_improvement = (recent_age_perf[0] - recent_age_perf[-1]) / recent_age_perf[0] if recent_age_perf[0] != 0 else 0
+                site_improvement = (recent_site_perf[-1] - recent_site_perf[0]) / recent_site_perf[0] if recent_site_perf[0] != 0 else 0
+                if age_improvement < 0.01 and site_improvement < 0.01:
+                    cycles_without_improvement += 1
+                    if cycles_without_improvement >= 2:
+                        if current_cycle_length > 10:
+                            current_cycle_length = max(10, current_cycle_length - 4)
+                            print(f"  Reducing cycle length to {current_cycle_length} due to stagnation")
+                        cycles_without_improvement = 0
+                else:
+                    cycles_without_improvement = 0
+    if best_combined_state is not None:
+        combined_model.load_state_dict(best_combined_state)
+    combined_results = {
+        "train_loss_epoch": train_loss_epoch,
+        "val_loss_epoch": val_loss_epoch,
+        "train_recon_loss_epoch": train_recon_loss_epoch,
+        "val_recon_loss_epoch": val_recon_loss_epoch,
+        "train_kl_loss_epoch": train_kl_loss_epoch,
+        "val_kl_loss_epoch": val_kl_loss_epoch,
+        "train_age_loss_epoch": train_age_loss_epoch,
+        "val_age_loss_epoch": val_age_loss_epoch,
+        "train_site_loss_epoch": train_site_loss_epoch,
+        "val_site_loss_epoch": val_site_loss_epoch,
+        "train_age_mae_epoch": train_age_mae_epoch,
+        "val_age_mae_epoch": val_age_mae_epoch,
+        "train_site_acc_epoch": train_site_acc_epoch,
+        "val_site_acc_epoch": val_site_acc_epoch,
+        "train_age_r2_epoch": train_age_r2_epoch,
+        "val_age_r2_epoch": val_age_r2_epoch,
+        "current_beta_epoch": current_beta_epoch,
+        "current_grl_alpha_epoch": current_grl_alpha_epoch,
+        "current_lr_epoch": current_lr_epoch,
+        "training_phase_epoch": training_phase_epoch,
+        "age_weight_epoch": age_weight_epoch,
+        "site_weight_epoch": site_weight_epoch,
+        "cycle_length_epoch": cycle_length_epoch,
+        f"best_{val_metric_to_monitor}": best_val_metric_value,
+        "best_epoch": best_epoch,
+        "model_path": os.path.join(save_dir, "best_alternating_improved_model.pth"),
+        "phase_performance": phase_performance
+    }
+    results[""] = combined_results
+    print(f"\n{'='*40}\nIMPROVED Alternating training complete!\n{'='*40}")
+    print(f"Best {val_metric_to_monitor}: {best_val_metric_value:.4f}")
+    print(f"Final cycle length: {current_cycle_length}")
     return results
