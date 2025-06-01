@@ -1278,9 +1278,7 @@ def train_vae_age_site_staged(
     
     results = {}
     
-    # ====================================================================
     # STAGE 1: Train each model independently on raw data
-    # ====================================================================
     print(f"\n{'='*40}\nSTAGE 1: Training models independently\n{'='*40}")
     sys.stdout.flush()
     
@@ -1785,9 +1783,9 @@ def train_vae_age_site_staged(
         "current_lr_epoch": site_current_lr_epoch
     }
     
-    # ====================================================================
+
     # STAGE 2: Train Combined Model with Frozen Predictors
-    # ====================================================================
+
     print(f"\n{'='*40}\nSTAGE 2: Training Combined Model with Frozen Predictors\n{'='*40}")
     
     # Create combined model
@@ -2073,7 +2071,6 @@ def train_vae_age_site_staged(
             save_site_predictions(train_site_true, train_site_pred, epoch+1, save_dir, prefix='train')
             save_site_predictions(val_site_true, val_site_pred, epoch+1, save_dir, prefix='val')
             # --- NEW: Save confusion matrix PNGs for this epoch ---
-            import numpy as np
             import os
             import matplotlib.pyplot as plt
             from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
@@ -2317,9 +2314,9 @@ def train_vae_age_site_alternating(
     results = {}
     
     
-    # ====================================================================
+
     # STAGE 1: Train each model independently (reuse existing logic)
-    # ====================================================================
+
     print(f"\n{'='*40}\nSTAGE 1: Training models independently\n{'='*40}")
     sys.stdout.flush()
     
@@ -2703,9 +2700,9 @@ def train_vae_age_site_alternating(
         "current_lr_epoch": site_current_lr_epoch
     }
     
-    # ====================================================================
+
     # STAGE 2: Alternating Adversarial Training
-    # ====================================================================
+
     print(f"\n{'='*40}\nSTAGE 2: Alternating Adversarial Training\n{'='*40}")
     print(f"Cycle structure: {cycle_length//2} epochs reconstruction+age, {cycle_length//2} epochs reconstruction+site")
     
@@ -3087,7 +3084,6 @@ def train_vae_age_site_alternating_improved(
     adaptive_cycle_length=True
 ):
     import os, sys
-    import numpy as np
     import torch
     print(f"DEBUG: Starting train_vae_age_site_alternating_improved function")
     print(f"DEBUG: Training configuration - epochs_stage1={epochs_stage1}, epochs_stage2={epochs_stage2}, device={device}")
@@ -3126,9 +3122,9 @@ def train_vae_age_site_alternating_improved(
     
     results = {}
     
-    # ====================================================================
+
     # STAGE 1: Train each model independently on raw data
-    # ====================================================================
+
     print(f"\n{'='*40}\nSTAGE 1: Training models independently\n{'='*40}")
     sys.stdout.flush()
     
@@ -3395,9 +3391,9 @@ def train_vae_age_site_alternating_improved(
         "val_acc_epoch": site_val_acc_epoch,
         "current_lr_epoch": site_current_lr_epoch
     }
-    # ====================================================================
+
     # STAGE 2: Alternating Adversarial Training with Adaptive Cycles
-    # ====================================================================
+
     print(f"\n{'='*40}\nSTAGE 2: Alternating Adversarial Training (Improved)\n{'='*40}")
     from models import CombinedAE_Predictors
     combined_model = CombinedAE_Predictors(vae_model, age_predictor, site_predictor, is_variational=is_variational)
@@ -3609,7 +3605,6 @@ def train_vae_age_site_alternating_improved(
             save_site_predictions(train_site_true, train_site_pred, epoch+1, save_dir, prefix='train')
             save_site_predictions(val_site_true, val_site_pred, epoch+1, save_dir, prefix='val')
             # --- NEW: Save confusion matrix PNGs for this epoch ---
-            import numpy as np
             import os
             import matplotlib.pyplot as plt
             from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
@@ -3738,7 +3733,7 @@ def train_vae_age_site_alternating_improved(
         "model_path": os.path.join(save_dir, "best_alternating_improved_model.pth"),
         "phase_performance": phase_performance
     }
-    results[""] = combined_results
+    results["alternating"] = combined_results
     print(f"\n{'='*40}\nIMPROVED Alternating training complete!\n{'='*40}")
     print(f"Best {val_metric_to_monitor}: {best_val_metric_value:.4f}")
     print(f"Final cycle length: {current_cycle_length}")
