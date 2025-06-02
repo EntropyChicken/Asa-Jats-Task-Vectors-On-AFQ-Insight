@@ -9,7 +9,8 @@ class Conv1DVariationalEncoder_fa(nn.Module):
         self.conv2_50 = nn.Conv1d(16, 32, kernel_size=4, stride=2, padding=2)
         self.conv2_100 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
         self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
-        
+        # self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
+
         # Calculate the output size dynamically
         self._dummy_input = torch.zeros(1, 1, input_length)
         self._conv_output = self._get_conv_output_shape(self._dummy_input)
@@ -31,11 +32,13 @@ class Conv1DVariationalEncoder_fa(nn.Module):
     def forward(self, x):
         x = F.relu(self.conv1(x))
         x = self.dropout(x)
-        x = F.relu(self.conv2_50(x))
+        # x = F.relu(self.conv2_50(x))
+        x = F.relu(self.conv2_100(x))
         x = self.dropout(x)
         x = F.relu(self.conv3(x))
         x = self.dropout(x)
-        
+        # x = F.relu(self.conv4(x))
+        x = self.dropout(x)
         x = self.flatten(x)
         mean = self.fc_mean(x)
         logvar = self.fc_logvar(x)    
@@ -50,7 +53,7 @@ class Conv1DVariationalDecoder_fa(nn.Module):
         self.conv_length = conv_output_shape[2]    # 7 for input_length=50, 14 for input_length=100
         self.flattened_size = self.conv_channels * self.conv_length
         
-        self.fc = nn.Linear(latent_dims, 64 * 7)
+        self.fc = nn.Linear(latent_dims, 64 * 13)
         self.deconv2 = nn.ConvTranspose1d(self.conv_channels, 32, kernel_size=5, stride=2, padding=2, output_padding=0)
         self.deconv3_100 = nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.deconv3_50 = nn.ConvTranspose1d(32, 16, kernel_size=4, stride=2, padding=2, output_padding=1)
@@ -60,9 +63,10 @@ class Conv1DVariationalDecoder_fa(nn.Module):
     def forward(self, x):
         batch_size = x.size(0)
         x = self.fc(x)
-        x = x.view(batch_size, 64, 7)
+        x = x.view(batch_size, 64, 13)
         x = F.relu(self.deconv2(x))
-        x = F.relu(self.deconv3_50(x))
+        # x = F.relu(self.deconv3_50(x))
+        x = F.relu(self.deconv3_100(x))
         x = self.deconv4(x)
         return x
 
@@ -165,8 +169,8 @@ class AgePredictorCNN(nn.Module):
         _dummy_input = torch.randn(1, input_channels, sequence_length)
         _conv_output_shape = self._get_conv_output_shape(_dummy_input)
         flat_size = _conv_output_shape[1] * _conv_output_shape[2]
+        print(f"[DEBUG] AgePredictorCNN: dummy input shape: {_dummy_input.shape}, conv output shape: {_conv_output_shape}, flat_size: {flat_size}")
 
-        # Remove the extra input for sex in the first fully connected layer
         self.fc1 = nn.Linear(flat_size, 64) 
         self.fc_out = nn.Linear(64, 1)
 
@@ -176,29 +180,21 @@ class AgePredictorCNN(nn.Module):
         x = self.relu(self.bn3(self.conv3(x)))
         return x.shape
 
-    def forward(self, x): # Removed sex=None from arguments
-        # Input shape: [1, 50]
-        # Need to reshape to [1, 1, 50] for conv1d (batch_size, channels, sequence_length)
+    def forward(self, x):
+        print(f"[DEBUG] AgePredictorCNN forward: input x shape: {x.shape}")
         if x.dim() == 2:
-            x = x.unsqueeze(1)  # Shape becomes [1, 1, 50]
-            
-        # Conv1: kernel=5, stride=2, padding=2
-        x = self.relu(self.bn1(self.conv1(x)))  # Shape: [1, 32, 25]
+            x = x.unsqueeze(1)
+        x = self.relu(self.bn1(self.conv1(x)))
         x = self.dropout(x)
-        
-        # Conv2: kernel=3, stride=2, padding=1
-        x = self.relu(self.bn2(self.conv2(x)))  # Shape: [1, 64, 13]
+        x = self.relu(self.bn2(self.conv2(x)))
         x = self.dropout(x)
-        
-        # Conv3: kernel=3, stride=2, padding=1
-        x = self.relu(self.bn3(self.conv3(x)))  # Shape: [1, 128, 7]
+        x = self.relu(self.bn3(self.conv3(x)))
         x = self.dropout(x)
-
-        x = self.flatten(x)  # Shape: [1, 128*7] = [1, 896]
-        
-        x = self.relu(self.fc1(x))  # Shape: [1, 64]
+        x = self.flatten(x)
+        print(f"[DEBUG] AgePredictorCNN forward: flattened x shape: {x.shape}")
+        x = self.relu(self.fc1(x))
         x = self.dropout(x)
-        age_pred = self.fc_out(x)  # Shape: [1, 1]
+        age_pred = self.fc_out(x)
         return age_pred
 
 class SitePredictorCNN(nn.Module):
@@ -218,6 +214,7 @@ class SitePredictorCNN(nn.Module):
         _dummy_input = torch.randn(1, input_channels, sequence_length)
         _conv_output_shape = self._get_conv_output_shape(_dummy_input)
         flat_size = _conv_output_shape[1] * _conv_output_shape[2]
+        print(f"[DEBUG] SitePredictorCNN: dummy input shape: {_dummy_input.shape}, conv output shape: {_conv_output_shape}, flat_size: {flat_size}")
 
         self.fc1 = nn.Linear(flat_size, 64)
         self.fc_out = nn.Linear(64, num_sites)
@@ -229,14 +226,15 @@ class SitePredictorCNN(nn.Module):
         return x.shape
 
     def forward(self, x):
+        print(f"[DEBUG] SitePredictorCNN forward: input x shape: {x.shape}")
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.dropout(x)
         x = self.relu(self.bn2(self.conv2(x)))
         x = self.dropout(x)
         x = self.relu(self.bn3(self.conv3(x)))
         x = self.dropout(x)
-
         x = self.flatten(x)
+        print(f"[DEBUG] SitePredictorCNN forward: flattened x shape: {x.shape}")
         x = self.relu(self.fc1(x))
         x = self.dropout(x)
         site_pred = self.fc_out(x)
