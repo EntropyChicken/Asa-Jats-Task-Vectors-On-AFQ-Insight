@@ -855,7 +855,7 @@ def select_device():
 def prep_fa_flattned_data(dataset, batch_size=64):
     """
     Prepares PyTorch dataloaders for training, testing, and validation.
-    These dataloaders select the fa tracts ONLY and flatten them to "create" more data.
+    These dataloaders select the fa tracts ONLY and flatten them to "create" more data by concatenating adjacent tracts (like prep_fa_dataset_paired).
 
     Parameters
     ----------
@@ -876,28 +876,31 @@ def prep_fa_flattned_data(dataset, batch_size=64):
         dataset, batch_size=batch_size
     )
 
-    class AllTractsDataset(torch.utils.data.Dataset):
+    class PairedTractsDataset(torch.utils.data.Dataset):
         def __init__(self, original_dataset):
             self.original_dataset = original_dataset
             self.sample_count = len(original_dataset)
-            self.tract_count = original_dataset[0][0].shape[0]
+            self.num_tracts = original_dataset[0][0].shape[0]
+            self.num_pairs = self.num_tracts // 2
 
         def __len__(self):
-            return self.sample_count * self.tract_count
+            return self.sample_count * self.num_pairs
 
         def __getitem__(self, idx):
-            sample_idx = idx // self.tract_count
-            tract_idx = idx % self.tract_count
+            sample_idx = idx // self.num_pairs
+            pair_idx = idx % self.num_pairs
 
             x, y = self.original_dataset[sample_idx]
+            # x shape: [num_tracts, 50]
+            tract1_idx = pair_idx * 2
+            tract2_idx = pair_idx * 2 + 1
+            # Concatenate along the node dimension
+            paired_x = torch.cat([x[tract1_idx], x[tract2_idx]], dim=0).unsqueeze(0)  # shape [1, 100]
+            return paired_x, y
 
-            tract_data = x[tract_idx : tract_idx + 1, :].clone()
-
-            return tract_data, y
-
-    all_tracts_train_dataset = AllTractsDataset(train_loader_fa.dataset)
-    all_tracts_test_dataset = AllTractsDataset(test_loader_fa.dataset)
-    all_tracts_val_dataset = AllTractsDataset(val_loader_fa.dataset)
+    all_tracts_train_dataset = PairedTractsDataset(train_loader_fa.dataset)
+    all_tracts_test_dataset = PairedTractsDataset(test_loader_fa.dataset)
+    all_tracts_val_dataset = PairedTractsDataset(val_loader_fa.dataset)
 
     all_tracts_train_loader = torch.utils.data.DataLoader(
         all_tracts_train_dataset, batch_size=batch_size, shuffle=True
@@ -3731,7 +3734,7 @@ def train_vae_age_site_alternating_improved(
         f"best_{val_metric_to_monitor}": best_val_metric_value,
         "best_epoch": best_epoch,
         "model_path": os.path.join(save_dir, "best_alternating_improved_model.pth"),
-        "phase_performance": phase_performance
+        "phase_performance": phase_performancex
     }
     results["alternating"] = combined_results
     print(f"\n{'='*40}\nIMPROVED Alternating training complete!\n{'='*40}")
