@@ -3734,7 +3734,7 @@ def train_vae_age_site_alternating_improved(
         f"best_{val_metric_to_monitor}": best_val_metric_value,
         "best_epoch": best_epoch,
         "model_path": os.path.join(save_dir, "best_alternating_improved_model.pth"),
-        "phase_performance": phase_performancex
+        "phase_performance": phase_performance
     }
     results["alternating"] = combined_results
     print(f"\n{'='*40}\nIMPROVED Alternating training complete!\n{'='*40}")
