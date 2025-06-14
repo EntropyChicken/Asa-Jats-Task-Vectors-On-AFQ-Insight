@@ -514,7 +514,7 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
     model_filename = f"best_vae_model_ld{latent_dim}_dr{dropout}.pth"
 
     opt = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.opxtim.lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=5, factor=0.5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=5, factor=0.5)
     
     scaler = torch.amp.GradScaler(device=device)  
 
