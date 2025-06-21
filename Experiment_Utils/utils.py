@@ -666,7 +666,10 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         # Periodic saving every N epochs
         if (epoch + 1) % periodic_save_interval == 0:
             periodic_model_path = f"vae_model_ld{latent_dim}_dr{dropout}_epoch_{epoch+1}.pth"
-            os.makedirs(os.path.dirname(periodic_model_path), exist_ok=True)
+            # Only create directory if the path contains one
+            dirname = os.path.dirname(periodic_model_path)
+            if dirname:  # Only create directory if path is not empty
+                os.makedirs(dirname, exist_ok=True)
             torch.save(model.state_dict(), periodic_model_path)
             print(f"  Saved periodic VAE model at epoch {epoch+1} to {periodic_model_path}")
         
