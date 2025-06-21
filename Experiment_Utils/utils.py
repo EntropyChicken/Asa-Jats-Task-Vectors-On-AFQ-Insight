@@ -7,6 +7,8 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import contextlib  # Local import to avoid adding a global dependency
+import os
 
 def get_beta(current_epoch, total_epochs, start_epoch=100):
     if current_epoch < start_epoch:
@@ -44,7 +46,9 @@ def train_variational_autoencoder_age_site(
  
      opt = torch.optim.Adam(combined_model.parameters(), lr=lr)
      scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, "min", patience=10, factor=0.5, verbose=True)
-     scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
+     # Enable AMP/GradScaler only when using CUDA and the caller wants mixed precision
+     use_amp = str(device).startswith("cuda") and torch.cuda.is_available()
+     scaler = torch.amp.GradScaler() if use_amp else None
  
      train_loss_epoch = []
      val_loss_epoch = []
@@ -141,7 +145,7 @@ def train_variational_autoencoder_age_site(
  
              opt.zero_grad(set_to_none=True)
  
-             with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+             with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                  model_out = combined_model(tract_data, grl_alpha=current_grl_alpha)
                  x_hat, mean, logvar, age_pred, site_pred = model_out
  
@@ -167,11 +171,18 @@ def train_variational_autoencoder_age_site(
                  if torch.isnan(total_loss): print("train NaN found in total_loss BEFORE backward!")
                  # ---------------------------------
  
-             scaler.scale(total_loss).backward()
-             scaler.unscale_(opt)
+             if use_amp:
+                 scaler.scale(total_loss).backward()
+                 scaler.unscale_(opt)
+             else:
+                 total_loss.backward()
+ 
              torch.nn.utils.clip_grad_norm_(combined_model.parameters(), max_norm=max_grad_norm)
-             scaler.step(opt)
-             scaler.update()
+             if use_amp:
+                 scaler.step(opt)
+                 scaler.update()
+             else:
+                 opt.step()
  
              train_items += batch_size
              running_loss += total_loss.item() * batch_size
@@ -228,7 +239,7 @@ def train_variational_autoencoder_age_site(
                  if torch.isnan(age_true).any(): print(f"NaN found in val age_true! Batch indices: {torch.where(torch.isnan(age_true))[0].tolist()}")
                  # ---------------------------------------------
  
-                 with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                 with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                      # Removed print
                      model_out = combined_model(tract_data, grl_alpha=current_grl_alpha)
                      x_hat, mean, logvar, age_pred, site_pred = model_out
@@ -498,10 +509,10 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
          all_tracts_val_loader,
      )
 
-def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device = 'cuda',
-                                beta=1.0, max_grad_norm=1.0, 
-                                kl_annealing_start_epoch=200, kl_annealing_duration=200, kl_annealing_start=0.0001,
-                                periodic_save_interval=50):
+def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device='cuda',
+                                   beta=1.0, max_grad_norm=1.0,
+                                   kl_annealing_start_epoch=200, kl_annealing_duration=200, kl_annealing_start=0.0001,
+                                   periodic_save_interval=50, mixed_precision=True):
     """
     Training loop for variational autoencoder with delayed sigmoid KL annealing.
     KL term has zero weight until kl_annealing_start_epoch, then anneals over kl_annealing_duration.
@@ -516,7 +527,9 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=5, factor=0.5)
     
-    scaler = torch.amp.GradScaler(device=device)  
+    # Enable AMP/GradScaler only when using CUDA and the caller wants mixed precision
+    use_amp = mixed_precision and str(device).startswith("cuda") and torch.cuda.is_available()
+    scaler = torch.amp.GradScaler() if use_amp else None
 
     train_rmse_per_epoch = []
     val_rmse_per_epoch = []
@@ -559,21 +572,27 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
             
             opt.zero_grad(set_to_none=True)
             
-            with torch.amp.autocast(device_type= "cuda"):
+            with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                 x_hat, mean, logvar = model(tract_data)
                 
                 loss, recon_loss, kl_loss = vae_loss(tract_data, x_hat, mean, logvar, current_beta, reduction="sum")
                 
                 batch_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
             
-            scaled_loss = scaler.scale(loss)
-            scaled_loss.backward()
+            if use_amp:
+                scaled_loss = scaler.scale(loss)
+                scaled_loss.backward()
+                scaler.unscale_(opt)
+            else:
+                loss.backward()
             
-            scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             
-            scaler.step(opt)
-            scaler.update()
+            if use_amp:
+                scaler.step(opt)
+                scaler.update()
+            else:
+                opt.step()
               
             items += batch_size
             running_loss += loss.item()
@@ -606,7 +625,7 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
                 
-                with torch.amp.autocast(device_type = "cuda"):
+                with (torch.amp.autocast(device_type = "cuda") if use_amp else contextlib.nullcontext()):
                     x_hat, mean, logvar = model(tract_data)
                     
                     # Use current_beta for validation loss calculation too
@@ -647,6 +666,7 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         # Periodic saving every N epochs
         if (epoch + 1) % periodic_save_interval == 0:
             periodic_model_path = f"vae_model_ld{latent_dim}_dr{dropout}_epoch_{epoch+1}.pth"
+            os.makedirs(os.path.dirname(periodic_model_path), exist_ok=True)
             torch.save(model.state_dict(), periodic_model_path)
             print(f"  Saved periodic VAE model at epoch {epoch+1} to {periodic_model_path}")
         
@@ -669,7 +689,7 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         "model_path": model_filename
     }
 
-def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device = 'cuda', max_grad_norm=1.0):
+def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device='cuda', max_grad_norm=1.0, mixed_precision=True):
     """
     Training loop for standard autoencoder
     """
@@ -686,7 +706,9 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device 
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=5, factor=0.5)
     
-    scaler = torch.amp.GradScaler(device=device)  # For mixed precision training
+    # Enable AMP/GradScaler only when running on CUDA and caller wants it
+    use_amp = mixed_precision and str(device).startswith("cuda") and torch.cuda.is_available()
+    scaler = torch.amp.GradScaler() if use_amp else None  # GradScaler not needed off-CUDA
 
     train_rmse_per_epoch = []
     val_rmse_per_epoch = []
@@ -713,8 +735,8 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device 
             
             opt.zero_grad(set_to_none=True)
             
-            # Forward pass
-            with torch.amp.autocast(device_type= "cuda"):
+            # Forward pass (AMP only on CUDA)
+            with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                 x_hat = model(tract_data)
                 
                 # Compute loss
@@ -725,17 +747,21 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device 
                 batch_rmse = torch.sqrt(F.mse_loss(tract_data, x_hat, reduction="mean"))
             
             # Scale the total loss for backward pass
-            scaled_loss = scaler.scale(loss)
-            scaled_loss.backward()
+            if use_amp:
+                scaler.scale(loss).backward()
+                scaler.unscale_(opt)
+            else:
+                loss.backward()
             
-            # Unscale gradients for clipping
-            scaler.unscale_(opt)
             # Clip gradients
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
             
             # Step optimizer with scaled gradients
-            scaler.step(opt)
-            scaler.update()
+            if use_amp:
+                scaler.step(opt)
+                scaler.update()
+            else:
+                opt.step()
               
             #increasing by batch size
             items += batch_size
@@ -761,7 +787,7 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device 
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
                 
-                with torch.amp.autocast(device_type="cuda"):
+                with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                     # Forward pass
                     x_hat = model(tract_data)
                     
@@ -1241,8 +1267,9 @@ def train_vae_age_site_staged(
     val_metric_to_monitor="val_age_mae",
     save_predictions_interval=50,  # Save predictions every N epochs
     periodic_save_interval=50,  # Save model weights every N epochs
-    is_variational=True  # NEW: Whether the autoencoder is variational or not
-):
+    is_variational=True,  # Whether the autoencoder is variational
+    mixed_precision=True  # Enable AMP only when running on CUDA
+ ):
     import os, sys
     print(f"DEBUG: Starting train_vae_age_site_staged function")
     print(f"DEBUG: Training configuration - epochs_stage1={epochs_stage1}, epochs_stage2={epochs_stage2}, device={device}")
@@ -1257,7 +1284,13 @@ def train_vae_age_site_staged(
     
     torch.backends.cudnn.benchmark = True
     
-    # Move models to device
+    # -------------------- AMP Setup --------------------
+    # Use automatic mixed precision only on CUDA when requested.
+    use_amp = mixed_precision and str(device).startswith("cuda") and torch.cuda.is_available()
+    scaler = torch.amp.GradScaler() if use_amp else None
+    # ---------------------------------------------------
+     
+     # Move models to device
     try:
         print(f"DEBUG: Moving models to device {device}")
         vae_model = vae_model.to(device)
@@ -1370,7 +1403,7 @@ def train_vae_age_site_staged(
                 
                 vae_optimizer.zero_grad(set_to_none=True)
                 
-                with torch.amp.autocast('cuda', enabled=(device == "cuda")):
+                with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                     if is_variational:
                         x_hat, mean, logvar = vae_model(tract_data)
                         
@@ -1396,9 +1429,18 @@ def train_vae_age_site_staged(
                         
                         total_loss = recon_loss  # Only reconstruction loss
                 
-                total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(vae_model.parameters(), max_norm=max_grad_norm)
-                vae_optimizer.step()
+                if use_amp:
+                    scaler.scale(total_loss).backward()
+                    # Unscale gradients before clipping
+                    scaler.unscale_(vae_optimizer)
+                    torch.nn.utils.clip_grad_norm_(vae_model.parameters(), max_norm=max_grad_norm)
+                    # Perform optimizer step with the scaler and update it
+                    scaler.step(vae_optimizer)
+                    scaler.update()
+                else:
+                    total_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(vae_model.parameters(), max_norm=max_grad_norm)
+                    vae_optimizer.step()
                 
                 train_items += batch_size
                 train_recon_loss += recon_loss.item() * batch_size
@@ -1437,7 +1479,7 @@ def train_vae_age_site_staged(
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
                 
-                with torch.amp.autocast('cuda', enabled=(device == "cuda")):
+                with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                     if is_variational:
                         x_hat, mean, logvar = vae_model(tract_data)
                         
@@ -1463,6 +1505,7 @@ def train_vae_age_site_staged(
                         
                         total_loss = recon_loss  # Only reconstruction loss
                 
+                # No backward pass or optimizer step during validation
                 val_items += batch_size
                 val_recon_loss += recon_loss.item() * batch_size
                 val_kl_loss += kl_loss.item() * batch_size  # Store raw KL for monitoring
@@ -1503,9 +1546,9 @@ def train_vae_age_site_staged(
         # Periodic saving every N epochs
         if (epoch + 1) % periodic_save_interval == 0:
             periodic_vae_path = os.path.join(save_dir, f"vae_epoch_{epoch+1}.pth")
+            os.makedirs(os.path.dirname(periodic_vae_path), exist_ok=True)
             torch.save(vae_model.state_dict(), periodic_vae_path)
             print(f"  Saved periodic {'VAE' if is_variational else 'Autoencoder'} model at epoch {epoch+1} to {periodic_vae_path}")
-            sys.stdout.flush()
     
     # Load best VAE model
     vae_model.load_state_dict(best_vae_state)
@@ -1556,13 +1599,20 @@ def train_vae_age_site_staged(
             
             age_optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                 age_pred = age_predictor(tract_data)  # Pass sex data to age predictor - REMOVED sex_data
                 age_loss = age_criterion(age_pred, age_true)
             
-            age_loss.backward()
-            torch.nn.utils.clip_grad_norm_(age_predictor.parameters(), max_norm=max_grad_norm)
-            age_optimizer.step()
+            if use_amp:
+                scaler.scale(age_loss).backward()
+                scaler.unscale_(age_optimizer)
+                torch.nn.utils.clip_grad_norm_(age_predictor.parameters(), max_norm=max_grad_norm)
+                scaler.step(age_optimizer)
+                scaler.update()
+            else:
+                age_loss.backward()
+                torch.nn.utils.clip_grad_norm_(age_predictor.parameters(), max_norm=max_grad_norm)
+                age_optimizer.step()
             
             train_items += batch_size
             train_age_loss += age_loss.item() * batch_size
@@ -1613,7 +1663,7 @@ def train_vae_age_site_staged(
                 age_true = labels[:, 0].float().unsqueeze(1).to(device)
                 # sex_data = labels[:, 1].float().to(device) - REMOVED
                 
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                     age_pred = age_predictor(tract_data)  # REMOVED sex_data
                     age_loss = age_criterion(age_pred, age_true)
                 
@@ -1713,7 +1763,7 @@ def train_vae_age_site_staged(
 
             site_optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                 site_pred = site_predictor(tract_data)
                 site_loss = site_criterion(site_pred, site_true)
 
@@ -1723,9 +1773,16 @@ def train_vae_age_site_staged(
                 print(f"  Predicted site classes: {torch.argmax(site_pred, dim=1).cpu().unique()}")
                 print(f"  Raw predictions shape: {site_pred.shape}, Example: {site_pred[0]}")
             
-            site_loss.backward()
-            torch.nn.utils.clip_grad_norm_(site_predictor.parameters(), max_norm=max_grad_norm)
-            site_optimizer.step()
+            if use_amp:
+                scaler.scale(site_loss).backward()
+                scaler.unscale_(site_optimizer)
+                torch.nn.utils.clip_grad_norm_(site_predictor.parameters(), max_norm=max_grad_norm)
+                scaler.step(site_optimizer)
+                scaler.update()
+            else:
+                site_loss.backward()
+                torch.nn.utils.clip_grad_norm_(site_predictor.parameters(), max_norm=max_grad_norm)
+                site_optimizer.step()
             
             train_items += batch_size
             train_site_loss += site_loss.item() * batch_size
@@ -1746,7 +1803,7 @@ def train_vae_age_site_staged(
                 tract_data = x.to(device, non_blocking=True)
                 site_true = labels[:, 2].long().to(device, non_blocking=True)
                 
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                     site_pred = site_predictor(tract_data)
                     site_loss = site_criterion(site_pred, site_true)
                 
@@ -1930,7 +1987,7 @@ def train_vae_age_site_staged(
             
             combined_optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                 x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha) # REMOVED sex=sex_data
                 
                 recon_loss = recon_criterion(x_hat, tract_data)
@@ -1958,8 +2015,17 @@ def train_vae_age_site_staged(
                                  w_age * age_loss +
                                  w_site * site_loss)
             
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, combined_model.parameters()), max_norm=max_grad_norm)
+            if use_amp:
+                scaler.scale(total_loss).backward()
+                scaler.unscale_(combined_optimizer)
+                torch.nn.utils.clip_grad_norm_(combined_model.parameters(), max_norm=max_grad_norm)
+                scaler.step(combined_optimizer)
+                scaler.update()
+            else:
+                total_loss.backward()
+                torch.nn.utils.clip_grad_norm_(combined_model.parameters(), max_norm=max_grad_norm)
+                combined_optimizer.step()
+            
             combined_optimizer.step()
             
             train_items += batch_size
@@ -2015,7 +2081,7 @@ def train_vae_age_site_staged(
                 # sex_data = labels[:, 1].float().to(device)  # Get sex data - REMOVED
                 site_true = labels[:, 2].long().to(device, non_blocking=True)
 
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                     x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha) # REMOVED sex=sex_data
                     
                     recon_loss = recon_criterion(x_hat, tract_data)
@@ -2373,7 +2439,7 @@ def train_vae_age_site_alternating(
             
             vae_optimizer.zero_grad(set_to_none=True)
             
-            with torch.amp.autocast('cuda', enabled=(device == "cuda")):
+            with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                 if is_variational:
                     x_hat, mean, logvar = vae_model(tract_data)
                     recon_loss = recon_criterion(x_hat, tract_data)
@@ -2393,7 +2459,12 @@ def train_vae_age_site_alternating(
                     kl_loss = torch.tensor(0.0, device=device)
                     total_loss = recon_loss
             
-            total_loss.backward()
+            if use_amp:
+                scaler.scale(total_loss).backward()
+                scaler.unscale_(vae_optimizer)
+            else:
+                total_loss.backward()
+            
             torch.nn.utils.clip_grad_norm_(vae_model.parameters(), max_norm=max_grad_norm)
             vae_optimizer.step()
             
@@ -2417,7 +2488,7 @@ def train_vae_age_site_alternating(
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
                 
-                with torch.amp.autocast('cuda', enabled=(device == "cuda")):
+                with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                     if is_variational:
                         x_hat, mean, logvar = vae_model(tract_data)
                         recon_loss = recon_criterion(x_hat, tract_data)
@@ -2522,13 +2593,20 @@ def train_vae_age_site_alternating(
             
             age_optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                 age_pred = age_predictor(tract_data)
                 age_loss = age_criterion(age_pred, age_true)
             
-            age_loss.backward()
-            torch.nn.utils.clip_grad_norm_(age_predictor.parameters(), max_norm=max_grad_norm)
-            age_optimizer.step()
+            if use_amp:
+                scaler.scale(age_loss).backward()
+                scaler.unscale_(age_optimizer)
+                torch.nn.utils.clip_grad_norm_(age_predictor.parameters(), max_norm=max_grad_norm)
+                scaler.step(age_optimizer)
+                scaler.update()
+            else:
+                age_loss.backward()
+                torch.nn.utils.clip_grad_norm_(age_predictor.parameters(), max_norm=max_grad_norm)
+                age_optimizer.step()
             
             train_items += batch_size
             train_age_loss += age_loss.item() * batch_size
@@ -2557,7 +2635,7 @@ def train_vae_age_site_alternating(
                 tract_data = x.to(device, non_blocking=True)
                 age_true = labels[:, 0].float().unsqueeze(1).to(device)
                 
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                     age_pred = age_predictor(tract_data)
                     age_loss = age_criterion(age_pred, age_true)
                 
@@ -2636,13 +2714,20 @@ def train_vae_age_site_alternating(
 
             site_optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                 site_pred = site_predictor(tract_data)
                 site_loss = site_criterion(site_pred, site_true)
-            
-            site_loss.backward()
-            torch.nn.utils.clip_grad_norm_(site_predictor.parameters(), max_norm=max_grad_norm)
-            site_optimizer.step()
+
+            if use_amp:
+                scaler.scale(site_loss).backward()
+                scaler.unscale_(site_optimizer)
+                torch.nn.utils.clip_grad_norm_(site_predictor.parameters(), max_norm=max_grad_norm)
+                scaler.step(site_optimizer)
+                scaler.update()
+            else:
+                site_loss.backward()
+                torch.nn.utils.clip_grad_norm_(site_predictor.parameters(), max_norm=max_grad_norm)
+                site_optimizer.step()
             
             train_items += batch_size
             train_site_loss += site_loss.item() * batch_size
@@ -2663,7 +2748,7 @@ def train_vae_age_site_alternating(
                 tract_data = x.to(device, non_blocking=True)
                 site_true = labels[:, 2].long().to(device, non_blocking=True)
                 
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                     site_pred = site_predictor(tract_data)
                     site_loss = site_criterion(site_pred, site_true)
                 
@@ -2827,7 +2912,7 @@ def train_vae_age_site_alternating(
             
             combined_optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                 x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha)
                 
                 recon_loss = recon_criterion(x_hat, tract_data)
@@ -2858,12 +2943,11 @@ def train_vae_age_site_alternating(
                     else:
                         total_loss = (w_recon * recon_loss + w_site * site_loss)
             
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                filter(lambda p: p.requires_grad, combined_model.parameters()), 
-                max_norm=max_grad_norm
-            )
-            combined_optimizer.step()
+            if use_amp:
+                scaler.scale(total_loss).backward()
+                scaler.unscale_(combined_optimizer)
+            else:
+                total_loss.backward()
             
             # Accumulate metrics (same as before)
             train_items += batch_size
@@ -2903,7 +2987,7 @@ def train_vae_age_site_alternating(
                 age_true = labels[:, 0].float().unsqueeze(1).to(device)
                 site_true = labels[:, 2].long().to(device, non_blocking=True)
                 
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with (torch.amp.autocast(device_type="cuda") if use_amp else contextlib.nullcontext()):
                     x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha)
                     
                     recon_loss = recon_criterion(x_hat, tract_data)
@@ -3271,7 +3355,7 @@ def train_vae_age_site_alternating_improved(
             tract_data = x.to(device, non_blocking=True)
             age_true = labels[:, 0].float().unsqueeze(1).to(device)
             age_optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with torch.amp.autocast(device_type="cuda"):
                 age_pred = age_predictor(tract_data)
                 age_loss = age_criterion(age_pred, age_true)
             age_loss.backward()
@@ -3295,7 +3379,7 @@ def train_vae_age_site_alternating_improved(
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
                 age_true = labels[:, 0].float().unsqueeze(1).to(device)
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with torch.amp.autocast(device_type="cuda"):
                     age_pred = age_predictor(tract_data)
                     age_loss = age_criterion(age_pred, age_true)
                 val_items += batch_size
@@ -3346,7 +3430,7 @@ def train_vae_age_site_alternating_improved(
             tract_data = x.to(device, non_blocking=True)
             site_true = labels[:, 2].long().to(device, non_blocking=True)
             site_optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with torch.amp.autocast(device_type="cuda"):
                 site_pred = site_predictor(tract_data)
                 site_loss = site_criterion(site_pred, site_true)
             site_loss.backward()
@@ -3367,7 +3451,7 @@ def train_vae_age_site_alternating_improved(
                 batch_size = x.size(0)
                 tract_data = x.to(device, non_blocking=True)
                 site_true = labels[:, 2].long().to(device, non_blocking=True)
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with torch.amp.autocast(device_type="cuda"):
                     site_pred = site_predictor(tract_data)
                     site_loss = site_criterion(site_pred, site_true)
                 val_items += batch_size
@@ -3515,7 +3599,7 @@ def train_vae_age_site_alternating_improved(
             age_true = labels[:, 0].float().unsqueeze(1).to(device)
             site_true = labels[:, 2].long().to(device, non_blocking=True)
             combined_optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with torch.amp.autocast(device_type="cuda"):
                 x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha)
                 recon_loss = recon_criterion(x_hat, tract_data)
                 if is_variational:
@@ -3568,7 +3652,7 @@ def train_vae_age_site_alternating_improved(
                 tract_data = x.to(device, non_blocking=True)
                 age_true = labels[:, 0].float().unsqueeze(1).to(device)
                 site_true = labels[:, 2].long().to(device, non_blocking=True)
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with torch.amp.autocast(device_type="cuda"):
                     x_hat, mean, logvar, age_pred, site_pred = combined_model(tract_data, grl_alpha=current_grl_alpha)
                     recon_loss = recon_criterion(x_hat, tract_data)
                     if is_variational:
