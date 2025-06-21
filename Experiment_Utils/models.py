@@ -94,7 +94,7 @@ class Conv1DEncoder_fa(nn.Module):
     def __init__(self, latent_dims=20, dropout=0.2):
         super().__init__()
         self.conv1 = nn.Conv1d(1, 16, kernel_size=5, stride=2, padding=2)
-        self.conv2 = nn.Conv1d(16, 32, kernel_size=4, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
         self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
         
         # Instead of directly mapping to latent space, we'll produce two outputs:
@@ -127,7 +127,7 @@ class Conv1DDecoder_fa(nn.Module):
         # self.fc = nn.Linear(latent_dims, 64 * 7)
         self.deconv1 = nn.ConvTranspose1d(latent_dims, 64, kernel_size=5, stride=2, padding=2, output_padding=0)
         self.deconv2 = nn.ConvTranspose1d(64, 32, kernel_size=5, stride=2, padding=2, output_padding=0)
-        self.deconv3 = nn.ConvTranspose1d(32, 16, kernel_size=4, stride=2, padding=2, output_padding=1)
+        self.deconv3 = nn.ConvTranspose1d(32, 16, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.deconv4 = nn.ConvTranspose1d(16, 1, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.relu = nn.ReLU()
         
@@ -516,8 +516,8 @@ class Conv1DVariationalEncoder_fa_unflattened(BaseConv1DEncode_fa_unflattened):
     def __init__(self, num_tracts=48, latent_dims=20, dropout=0.2):
         super().__init__(num_tracts, latent_dims, dropout)
         self.flatten = nn.Flatten()
-        self.fc_mean = nn.Linear(64 * 7, latent_dims)
-        self.fc_logvar = nn.Linear(64 * 7, latent_dims)
+        self.fc_mean = nn.Linear(64 * 13, latent_dims)
+        self.fc_logvar = nn.Linear(64 * 13, latent_dims)
 
     def forward(self, x):
         x = self._encode_base(x)
@@ -530,7 +530,7 @@ class Conv1DVariationalEncoder_fa_unflattened(BaseConv1DEncode_fa_unflattened):
 class Conv1DVariationalDecoder_fa_unflattened(nn.Module):
     def __init__(self, num_tracts=48, latent_dims=20):
         super().__init__()
-        self.fc = nn.Linear(latent_dims, 64 * 7)
+        self.fc = nn.Linear(latent_dims, 64 * 13)
 
         self.deconv1 = nn.ConvTranspose1d(
             latent_dims, 64, kernel_size=5, stride=2, padding=2, output_padding=1
@@ -539,10 +539,10 @@ class Conv1DVariationalDecoder_fa_unflattened(nn.Module):
             64, 32, kernel_size=5, stride=2, padding=2, output_padding=1
         )
         self.deconv3 = nn.ConvTranspose1d(
-            32, 16, kernel_size=4, stride=2, padding=3, output_padding=1
+            32, 16, kernel_size=4, stride=2, padding=2, output_padding=1
         )
         self.deconv4 = nn.ConvTranspose1d(
-            16, num_tracts, kernel_size=3, stride=2, padding=1, output_padding=1
+            16, num_tracts, kernel_size=3, stride=2, padding=2, output_padding=1
         )
 
         self.relu = nn.ReLU()
@@ -550,7 +550,7 @@ class Conv1DVariationalDecoder_fa_unflattened(nn.Module):
     def forward(self, x):
         batch_size = x.size(0)
         x = self.fc(x)
-        x = x.view(batch_size, 64, 7)
+        x = x.view(batch_size, 64, 13)
         x = F.relu(self.deconv2(x))
         x = F.relu(self.deconv3(x))
         x = self.deconv4(x)
