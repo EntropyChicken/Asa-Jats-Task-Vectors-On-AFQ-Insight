@@ -2029,8 +2029,6 @@ def train_vae_age_site_staged(
                 torch.nn.utils.clip_grad_norm_(combined_model.parameters(), max_norm=max_grad_norm)
                 combined_optimizer.step()
             
-            combined_optimizer.step()
-            
             train_items += batch_size
             running_loss += total_loss.item() * batch_size
             running_recon_loss += recon_loss.item() * batch_size
@@ -2295,7 +2293,12 @@ def train_vae_age_site_staged(
             sys.stdout.flush()
     
     # Load best combined model
-    combined_model.load_state_dict(best_combined_state)
+    if best_combined_state is not None:
+        combined_model.load_state_dict(best_combined_state)
+    else:
+        print("WARNING: No best combined state was saved (training may have diverged)")
+        # Use the current state as fallback
+        best_combined_state = combined_model.state_dict()
     
     # --- Return Results Dictionary ---
     combined_results = {
