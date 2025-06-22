@@ -1549,7 +1549,8 @@ def train_vae_age_site_staged(
         # Periodic saving every N epochs
         if (epoch + 1) % periodic_save_interval == 0:
             periodic_vae_path = os.path.join(save_dir, f"vae_epoch_{epoch+1}.pth")
-            os.makedirs(os.path.dirname(periodic_vae_path), exist_ok=True)
+            # Ensure the save directory exists
+            os.makedirs(save_dir, exist_ok=True)
             torch.save(vae_model.state_dict(), periodic_vae_path)
             print(f"  Saved periodic {'VAE' if is_variational else 'Autoencoder'} model at epoch {epoch+1} to {periodic_vae_path}")
     
@@ -2288,6 +2289,8 @@ def train_vae_age_site_staged(
         # Periodic saving every N epochs
         if (epoch + 1) % periodic_save_interval == 0:
             periodic_combined_path = os.path.join(save_dir, f"combined_model_epoch_{epoch+1}.pth")
+            # Ensure the save directory exists
+            os.makedirs(save_dir, exist_ok=True)
             torch.save(combined_model.state_dict(), periodic_combined_path)
             print(f"  Saved periodic combined model at epoch {epoch+1} to {periodic_combined_path}")
             sys.stdout.flush()
@@ -2550,6 +2553,8 @@ def train_vae_age_site_alternating(
         # Periodic saving
         if (epoch + 1) % periodic_save_interval == 0:
             periodic_vae_path = os.path.join(save_dir, f"vae_alternating_epoch_{epoch+1}.pth")
+            # Ensure the save directory exists
+            os.makedirs(save_dir, exist_ok=True)
             torch.save(vae_model.state_dict(), periodic_vae_path)
     
     # Load best VAE model
@@ -3108,6 +3113,8 @@ def train_vae_age_site_alternating(
         # Periodic saving
         if (epoch + 1) % periodic_save_interval == 0:
             periodic_path = os.path.join(save_dir, f"alternating_model_epoch_{epoch+1}.pth")
+            # Ensure the save directory exists
+            os.makedirs(save_dir, exist_ok=True)
             torch.save(combined_model.state_dict(), periodic_path)
     
     # Load best model
@@ -3325,6 +3332,8 @@ def train_vae_age_site_alternating_improved(
             torch.save(best_vae_state, os.path.join(save_dir, "best_vae_alternating_improved.pth"))
         if (epoch + 1) % periodic_save_interval == 0:
             periodic_vae_path = os.path.join(save_dir, f"vae_alternating_improved_epoch_{epoch+1}.pth")
+            # Ensure the save directory exists
+            os.makedirs(save_dir, exist_ok=True)
             torch.save(vae_model.state_dict(), periodic_vae_path)
     vae_model.load_state_dict(best_vae_state)
     results["vae"] = {
@@ -3778,6 +3787,8 @@ def train_vae_age_site_alternating_improved(
             torch.save(best_combined_state, model_path)
         if (epoch + 1) % periodic_save_interval == 0:
             periodic_path = os.path.join(save_dir, f"alternating_improved_model_epoch_{epoch+1}.pth")
+            # Ensure the save directory exists
+            os.makedirs(save_dir, exist_ok=True)
             torch.save(combined_model.state_dict(), periodic_path)
         # Adaptive cycle length
         if adaptive_cycle_length and (epoch + 1) % current_cycle_length == 0:
