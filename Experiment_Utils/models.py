@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Variational encoder for flattened FA tract data (single channel 1D sequences)
+# Uses 1D convolutions to progressively downsample input and outputs mean/logvar for latent space
+# Supports variable input lengths (50 or 100) with dynamic shape calculation
 class Conv1DVariationalEncoder_fa(nn.Module):
     def __init__(self, latent_dims=20, dropout=0.2, input_length=50):
         super().__init__()
@@ -45,6 +48,9 @@ class Conv1DVariationalEncoder_fa(nn.Module):
 
         return mean, logvar
 
+# Variational decoder for reconstructing flattened FA tract data from latent vectors
+# Uses transposed convolutions to upsample latent code back to original sequence length
+# Paired with Conv1DVariationalEncoder_fa to form complete VAE
 class Conv1DVariationalDecoder_fa(nn.Module):
     def __init__(self, latent_dims=20, conv_output_shape=None):
         super().__init__()
@@ -70,6 +76,9 @@ class Conv1DVariationalDecoder_fa(nn.Module):
         x = self.deconv4(x)
         return x
 
+# Complete variational autoencoder for flattened FA tract data
+# Combines encoder and decoder with reparameterization trick for stochastic latent sampling
+# Designed for single-channel 1D sequences representing tract profiles
 class Conv1DVariationalAutoencoder_fa(nn.Module):
     def __init__(self, latent_dims=20, dropout=0.0, input_length=50):
         super().__init__()
@@ -90,6 +99,9 @@ class Conv1DVariationalAutoencoder_fa(nn.Module):
         x_prime = self.decoder(z)
         return x_prime, mean, logvar
 
+# Non-variational encoder for flattened FA tract data (deterministic version)
+# Similar architecture to variational encoder but outputs latent features directly
+# Used in standard autoencoders without stochastic sampling
 class Conv1DEncoder_fa(nn.Module):
     def __init__(self, latent_dims=20, dropout=0.2):
         super().__init__()
@@ -121,6 +133,9 @@ class Conv1DEncoder_fa(nn.Module):
 
         return x
 
+# Non-variational decoder for reconstructing FA tract data from deterministic latent features
+# Uses transposed convolutions to reconstruct original sequence from encoded representation
+# Paired with Conv1DEncoder_fa for standard (non-variational) autoencoders
 class Conv1DDecoder_fa(nn.Module):
     def __init__(self, latent_dims=20):
         super().__init__()
@@ -139,6 +154,9 @@ class Conv1DDecoder_fa(nn.Module):
         x = self.deconv4(x)
         return x
 
+# Standard (non-variational) autoencoder for flattened FA tract data
+# Deterministic encoder-decoder architecture for learning compressed representations
+# Simpler alternative to VAE without stochastic latent sampling
 class Conv1DAutoencoder_fa(nn.Module):
     def __init__(self, latent_dims=20, dropout=0.0):
         super().__init__()
@@ -152,6 +170,9 @@ class Conv1DAutoencoder_fa(nn.Module):
 
 # --- Predictor Models ---
 
+# CNN-based age predictor for tract data (regression task)
+# Uses 1D convolutions with batch normalization and dropout for age prediction
+# Designed to work on raw tract data or reconstructed autoencoder outputs
 class AgePredictorCNN(nn.Module):
     def __init__(self, input_channels=1, sequence_length=50, dropout=0.2):
         super().__init__()
@@ -197,6 +218,9 @@ class AgePredictorCNN(nn.Module):
         age_pred = self.fc_out(x)
         return age_pred
 
+# CNN-based site predictor for tract data (classification task)
+# Similar architecture to AgePredictorCNN but outputs site classification probabilities
+# Used in adversarial training to learn site-invariant representations
 class SitePredictorCNN(nn.Module):
     def __init__(self, num_sites=4, input_channels=1, sequence_length=50, dropout=0.2):
         super().__init__()
@@ -251,6 +275,9 @@ except ImportError:
             print("Warning: Using dummy grad_reverse!")
             return x
 
+# Combined model wrapper for VAE + age predictor + site predictor (adversarial training)
+# Integrates variational autoencoder with predictors and gradient reversal layer
+# Enables multi-task learning with age prediction and site invariance objectives
 class CombinedVAE_Predictors(nn.Module):
     def __init__(self, vae_model, age_predictor, site_predictor):
         super().__init__()
@@ -265,6 +292,9 @@ class CombinedVAE_Predictors(nn.Module):
         site_pred = self.site_predictor(x_hat_reversed)
         return x_hat, mean, logvar, age_pred, site_pred
 
+# Unified combined model for both variational and non-variational autoencoders
+# Supports both VAE and standard AE with same predictor interface
+# Automatically handles dummy mean/logvar for non-variational case
 class CombinedAE_Predictors(nn.Module):
     """
     Combined model that works with both variational and non-variational autoencoders.
@@ -299,6 +329,9 @@ class CombinedAE_Predictors(nn.Module):
         site_pred = self.site_predictor(x_hat_reversed)
         return x_hat, mean, logvar, age_pred, site_pred
 
+# Residual block for enhanced CNN architectures
+# Implements skip connections to improve gradient flow and training stability
+# Used in more sophisticated predictor models for better performance
 class ResidualBlock(nn.Module):
     def __init__(self, channels):
         super().__init__()
@@ -314,6 +347,9 @@ class ResidualBlock(nn.Module):
         out += residual
         return F.relu(out)
 
+# Self-attention mechanism for 1D sequences (tract data)
+# Allows model to focus on relevant parts of the sequence for better feature learning
+# Enhances representational capacity of CNN-based models
 class SelfAttention1D(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
@@ -333,6 +369,9 @@ class SelfAttention1D(nn.Module):
         out = self.gamma * out + x
         return out
 
+# Multi-scale convolutional layer using different kernel sizes
+# Captures features at multiple temporal scales simultaneously
+# Improves feature diversity and model robustness for sequence data
 class MultiScaleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -346,6 +385,9 @@ class MultiScaleConv(nn.Module):
     def forward(self, x):
         return torch.cat([self.conv3(x), self.conv5(x), self.conv7(x)], dim=1)
 
+# Advanced age predictor with residual blocks, attention, and multi-scale convolutions
+# Incorporates sex information as additional input for improved age prediction
+# More sophisticated architecture for better performance on complex tract data
 class ImprovedAgePredictorCNN(nn.Module):
     def __init__(self, input_channels=1, sequence_length=50, dropout=0.3):
         super().__init__()
@@ -438,6 +480,9 @@ class ImprovedAgePredictorCNN(nn.Module):
         
         return age_pred
 
+# Simplified age predictor with basic CNN architecture
+# Lightweight alternative to ImprovedAgePredictorCNN for faster training
+# Still incorporates sex information but with fewer layers and parameters
 class SimpleAgePredictorCNN(nn.Module):
     """
     A simpler age predictor model that may be more robust for our task.
@@ -492,6 +537,9 @@ class SimpleAgePredictorCNN(nn.Module):
         
         return age_pred
     
+# Base encoder class for multi-tract FA data (unflattened format)
+# Handles input with multiple tract channels instead of flattened single channel
+# Shared base functionality for both variational and non-variational encoders
 class BaseConv1DEncode_fa_unflattened(nn.Module):
     def __init__(self, num_tracts=48, latent_dims=20, dropout=0.2):
         super().__init__()
@@ -512,6 +560,9 @@ class BaseConv1DEncode_fa_unflattened(nn.Module):
         return x
 
 
+# Variational encoder for multi-tract FA data (preserves tract structure)
+# Extends base encoder to output mean and logvar for latent distribution
+# Processes multiple tract channels simultaneously without flattening
 class Conv1DVariationalEncoder_fa_unflattened(BaseConv1DEncode_fa_unflattened):
     def __init__(self, num_tracts=48, latent_dims=20, dropout=0.2):
         super().__init__(num_tracts, latent_dims, dropout)
@@ -527,6 +578,9 @@ class Conv1DVariationalEncoder_fa_unflattened(BaseConv1DEncode_fa_unflattened):
         return mean, logvar
 
 
+# Variational decoder for multi-tract FA data reconstruction
+# Reconstructs original multi-channel tract structure from latent vectors
+# Paired with variational encoder for complete unflattened VAE
 class Conv1DVariationalDecoder_fa_unflattened(nn.Module):
     def __init__(self, num_tracts=48, latent_dims=20):
         super().__init__()
@@ -557,6 +611,9 @@ class Conv1DVariationalDecoder_fa_unflattened(nn.Module):
         return x
 
 
+# Complete variational autoencoder for unflattened multi-tract FA data
+# Maintains tract structure throughout encoding/decoding process
+# Alternative to flattened approach that preserves spatial tract relationships
 class Conv1DVariationalAutoencoder_fa_unflattened(nn.Module):
     def __init__(self, num_tracts=48, latent_dims=20, dropout=0.2):
         super().__init__()
@@ -582,6 +639,9 @@ class Conv1DVariationalAutoencoder_fa_unflattened(nn.Module):
         x_hat = self.decoder(z)
         return x_hat, mean, logvar
     
+# Generic base encoder class for multi-tract data
+# Provides common convolutional layers for different encoder variants
+# Flexible foundation for both variational and non-variational encoders
 class BaseConv1DEncoder(nn.Module):
     def __init__(self, num_tracts=48, latent_dims=20, dropout=0.2):
         super().__init__()
@@ -602,6 +662,9 @@ class BaseConv1DEncoder(nn.Module):
         return x
 
 
+# Generic variational encoder extending base encoder functionality
+# Similar to unflattened version but with different naming convention
+# Outputs mean and logvar for stochastic latent representation
 class Conv1DVariationalEncoder(BaseConv1DEncoder):
     def __init__(self, num_tracts=48, latent_dims=20, dropout=0.2):
         super().__init__(num_tracts, latent_dims, dropout)
@@ -617,6 +680,9 @@ class Conv1DVariationalEncoder(BaseConv1DEncoder):
         return mean, logvar
 
 
+# Generic variational decoder for multi-tract data reconstruction
+# Reconstructs multi-channel output from latent vector representation
+# Counterpart to Conv1DVariationalEncoder for complete VAE system
 class Conv1DVariationalDecoder(nn.Module):
     def __init__(self, num_tracts=48, latent_dims=20):
         super().__init__()
@@ -647,6 +713,9 @@ class Conv1DVariationalDecoder(nn.Module):
         return x
 
 
+# Generic variational autoencoder for multi-tract neuroimaging data
+# Complete VAE system combining encoder and decoder with reparameterization
+# Configurable for different numbers of tracts and latent dimensions
 class Conv1DVariationalAutoencoder(nn.Module):
     def __init__(self, num_tracts=48, latent_dims=20, dropout=0.2):
         super().__init__()
