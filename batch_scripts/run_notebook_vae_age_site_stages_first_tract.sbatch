@@ -24,6 +24,12 @@
 #SBATCH --output=first_tract_output.log
 #SBATCH --error=first_tract_error.log
 
+#Testing Variational autoencoder on the first tract only 
+#Staged training loop for age and site prediction
+#Phase 1 trains models separately
+#Phase 2 trains models vae and age and site predictors together,
+# with frozen predictors for age and site predictors, gradually unfreezing.
+
 module load cuda/11.8
 
 # Force TensorFlow to use CPU only, while PyTorch can use GPU

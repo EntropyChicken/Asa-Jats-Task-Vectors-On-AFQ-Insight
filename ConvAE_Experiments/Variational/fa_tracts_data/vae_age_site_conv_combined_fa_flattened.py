@@ -106,22 +106,22 @@ else:
     print("Warning: Could not get sample batch to determine input shape.")
     # Set defaults or exit if necessary
     input_channels = 1 # Set manually if needed
-    sequence_length = 50 # Set manually if needed (MUST MATCH VAE DECODER OUTPUT)
+    sequence_length = 100 # Set manually if needed (MUST MATCH VAE DECODER OUTPUT)
     print(f"Using default/manual input shape: channels={input_channels}, sequence_length={sequence_length}")
 
 # Define lists of hyperparameters to test
-latent_dims = [32, 64]
+latent_dims = [64]
 dropout_values = [0.0]  # VAE dropout
 
 # New separate dropout values for predictors
 age_dropout_values = [0.0]
-site_dropout_values = [0.0, 0.3]
+site_dropout_values = [0.0]
 
 # Define lists of weight values to test
-w_recon_values = [1.0]
-w_kl_values = [1.0, 0.1]
-w_age_values = [3.0, 5.0]  # Higher weights to prioritize age prediction
-w_site_values = [2.0, 3.0]  # Higher weights for stronger adversarial effect
+w_recon_values = [20.0]
+w_kl_values = [.001, 0.0]
+w_age_values = [20.0, 5.0]  # Higher weights to prioritize age prediction
+w_site_values = [2.5, 5.0]  # Higher weights for stronger adversarial effect
 
 # --- Storage for results ---
 models = {}
@@ -153,13 +153,13 @@ for dropout in dropout_values:
                                     break
 
                                 # --- Instantiate Models ---
-                                vae = Conv1DVariationalAutoencoder_fa(latent_dims=latent_dim, dropout=dropout)
+                                vae = Conv1DVariationalAutoencoder_fa(latent_dims=latent_dim, dropout=dropout, input_length=100)
                                 age_predictor = AgePredictorCNN(input_channels=input_channels, 
-                                                              sequence_length=sequence_length, 
+                                                              sequence_length=100, 
                                                               dropout=age_dropout)
                                 site_predictor = SitePredictorCNN(num_sites=num_sites, 
                                                                 input_channels=input_channels, 
-                                                                sequence_length=sequence_length, 
+                                                                sequence_length=100, 
                                                                 dropout=site_dropout)
 
                                 combined_model = CombinedVAE_Predictors(vae, age_predictor, site_predictor)
@@ -173,8 +173,8 @@ for dropout in dropout_values:
                                 try:
                                     training_results = train_variational_autoencoder_age_site(
                                         combined_model=combined_model,
-                                        train_data=train_loader_raw,
-                                        val_data=val_loader_raw,
+                                        train_data=all_tracts_train_loader,
+                                        val_data=all_tracts_val_loader,
                                         epochs=500,
                                         lr=0.001,
                                         device=device,

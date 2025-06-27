@@ -327,14 +327,14 @@ try:
     sys.stdout.flush()
 
     # Set parameters for the staged experiment
-    latent_dim = 64  # Choose the larger latent dim
+    latent_dim = 100  # Choose the larger latent dim
     dropout = 0.0  # VAE dropout
     age_dropout = 0.1
     site_dropout = 0.2
     
     # IMPROVED VAE PARAMETERS TO FIX POSTERIOR COLLAPSE
     w_recon = 20.0  # Reduced from 25.0 - don't let reconstruction dominate
-    w_kl = 0.0000   # Increased from 0.0001 - give KL more weight
+    w_kl = 0.0001   # Increased from 0.0001 - give KL more weight
     w_age = 20.0  # Higher weight for age prediction
     w_site = 2.5  # Higher weight for site adversarial training
     
@@ -362,8 +362,8 @@ try:
 
     # Create models
     try:
-        # vae = Conv1DVariationalAutoencoder_fa_unflattened(num_tracts=48,latent_dims=latent_dim, dropout=dropout)
-        vae = Conv1DAutoencoder(num_tracts=24,latent_dims=latent_dim, dropout=dropout)
+        vae = Conv1DVariationalAutoencoder_fa_unflattened(num_tracts=24,latent_dims=latent_dim, dropout=dropout)
+        # vae = Conv1DAutoencoder(num_tracts=24,latent_dims=latent_dim, dropout=dropout)
 
         age_predictor = AgePredictorCNN(input_channels=input_channels, 
                                         sequence_length=sequence_length, 
@@ -397,8 +397,8 @@ try:
             site_predictor=site_predictor,
             train_data=train_loader_raw,
             val_data=val_loader_raw,
-            epochs_stage1=1000,  # For individual training
-            epochs_stage2=2000,  # For adversarial training
+            epochs_stage1=750,  # For individual training
+            epochs_stage2=1500,  # For adversarial training
             lr=0.0001,
             device=device,
             max_grad_norm=1.0,
@@ -416,7 +416,7 @@ try:
             val_metric_to_monitor="val_age_mae",
             save_predictions_interval=50,
             periodic_save_interval=50,  # Save model weights every 50 epochs
-            is_variational=False  # NEW: Set to False for non-variational autoencoder
+            is_variational=True  # NEW: Set to False for non-variational autoencoder
         )
         print("DEBUG: Staged training completed successfully")
         sys.stdout.flush()
@@ -603,7 +603,9 @@ try:
     sys.stdout.flush()
 
     # Create fresh models for alternating approach
-    vae_alt = Conv1DAutoencoder(num_tracts=24, latent_dims=latent_dim, dropout=dropout)
+    # vae_alt = Conv1DAutoencoder(num_tracts=24, latent_dims=latent_dim, dropout=dropout)
+    vae_alt = Conv1DVariationalAutoencoder_fa_unflattened(num_tracts=24,latent_dims=latent_dim, dropout=dropout)
+
     age_predictor_alt = AgePredictorCNN(input_channels=input_channels, 
                                        sequence_length=sequence_length, 
                                        dropout=age_dropout)
@@ -655,16 +657,16 @@ try:
             site_predictor=site_predictor_alt,
             train_data=train_loader_raw,
             val_data=val_loader_raw,
-            epochs_stage1=500,   # Reduced for testing
-            epochs_stage2=1000,  # Reduced for testing
-            cycle_length=20,     # 10 epochs per phase
+            epochs_stage1=750,   # Reduced for testing
+            epochs_stage2=1500,  # Reduced for testing
+            cycle_length=30,     # 10 epochs per phase
             lr=0.0001,
             device=device,
             max_grad_norm=1.0,
             w_recon=w_recon,
             w_kl=w_kl,
             w_age=w_age,
-            w_site=w_site,
+            w_site=w_site,  
             kl_annealing_start_epoch=250,
             kl_annealing_duration=500,
             kl_annealing_start=0.001,
@@ -675,7 +677,7 @@ try:
             val_metric_to_monitor="val_age_mae",
             save_predictions_interval=50,
             periodic_save_interval=50,
-            is_variational=False
+            is_variational=True
         )
         print("DEBUG: Alternating training completed successfully")
         sys.stdout.flush()

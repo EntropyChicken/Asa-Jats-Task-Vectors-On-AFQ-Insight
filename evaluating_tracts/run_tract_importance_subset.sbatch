@@ -24,6 +24,9 @@
 # Each job will process 12 tracts
 #SBATCH --array=0-3
 
+#Tests the individual importance of each tract
+#Checks how much biological information is contained in each tract
+
 # Load CUDA
 module load cuda/11.8
 

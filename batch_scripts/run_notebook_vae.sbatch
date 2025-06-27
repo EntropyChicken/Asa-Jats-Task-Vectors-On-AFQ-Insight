@@ -24,6 +24,9 @@
 # #SBATCH --output=my_output.log
 # #SBATCH --error=my_error.log
 
+#Testing Variational autoencoder on FA data, flattened to one channel
+#Tests permutations of latent dimensions and dropout rates
+
 module load cuda/11.8
 
 source /mmfs1/gscratch/nrdg/samchou/conda/etc/profile.d/conda.sh

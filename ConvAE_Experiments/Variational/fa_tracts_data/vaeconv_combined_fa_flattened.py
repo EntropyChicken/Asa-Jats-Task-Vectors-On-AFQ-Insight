@@ -14,7 +14,6 @@ import numpy as np
 import matplotlib.pyplot as plt; plt.rcParams['figure.dpi'] = 200
 from afqinsight import AFQDataset
 from afqinsight.nn.utils import prep_pytorch_data
-from afqinsight.nn.utils import prep_fa_dataset
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 from torch.distributions.normal import Normal
@@ -90,7 +89,7 @@ for dropout in dropout_values:
         print(f"Training Autoencoder with Latent Dimension: {latent_dim} and Dropout: {dropout}")
         
         # 1) Train the model and store results
-        test_model = Conv1DVariationalAutoencoder_fa(latent_dims=latent_dim, dropout=dropout).to(device)
+        test_model = Conv1DVariationalAutoencoder_fa(latent_dims=latent_dim, dropout=dropout, input_length=in_channels).to(device)
         training_results = train_variational_autoencoder(
             model=test_model,
             train_data=all_tracts_train_loader,

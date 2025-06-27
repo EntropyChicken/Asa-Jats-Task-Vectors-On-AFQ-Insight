@@ -1,0 +1,1 @@
+files that i used to trouble shoot path / cuda issues 

@@ -24,6 +24,14 @@
 #SBATCH --output=all_tracts_output.log
 #SBATCH --error=all_tracts_error.log
 
+
+#Testing Non variational autoencoder on the fa tracts 
+#Staged training loop for age and site prediction
+#Phase 1 trains models separately
+#Phase 2 trains models vae and age and site predictors together,
+# with frozen predictors for age and site predictors, gradually unfreezing.
+# KL annealing, GRL annealing, and weight annealing are all used.
+
 module load cuda/11.8
 
 # Force TensorFlow to use CPU only, while PyTorch can use GPU

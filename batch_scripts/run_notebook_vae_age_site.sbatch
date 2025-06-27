@@ -24,6 +24,12 @@
 # #SBATCH --output=my_output.log
 # #SBATCH --error=my_error.log
 
+#Testing Variational autoencoder on FA data, flattened to one channel
+#Tests different latent dimensions and dropout rates
+#Tests different weightings for age and site prediction
+#Tests age and site prediction 
+#Training loop has the models training simultaneously
+
 module load cuda/11.8
 
 source /mmfs1/gscratch/nrdg/samchou/conda/etc/profile.d/conda.sh

@@ -65,7 +65,8 @@ parser.add_argument('--end-tract', type=int, default=47, help='End at this tract
 args = parser.parse_args()
 
 # Adjust path as needed - update this to your path
-sys.path.insert(1, os.path.join(os.getcwd(), 'Experiment_Utils'))
+# sys.path.insert(1, os.path.join(os.getcwd(), 'Experiment_Utils'))
+sys.path.insert(1, '/mmfs1/gscratch/nrdg/samchou/AFQ-Insight-Autoencoder-Experiments/Experiment_Utils')
 # Import necessary functions
 try:
     print("DEBUG: Importing utility functions")
