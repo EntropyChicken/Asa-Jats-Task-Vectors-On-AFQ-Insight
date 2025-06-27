@@ -20,6 +20,8 @@ def get_beta(current_epoch, total_epochs, start_epoch=100):
 
     return beta
 
+# Multi-task adversarial training: Trains combined VAE + age predictor + site predictor
+# Uses gradient reversal to learn age-predictive but site-invariant representations
 def train_variational_autoencoder_age_site(
      combined_model,
      train_data,
@@ -509,20 +511,27 @@ def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_
          all_tracts_val_loader,
      )
 
+# Standard VAE training: Trains a single variational autoencoder for reconstruction
+# Includes KL annealing, mixed precision, and periodic model saving
 def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device='cuda',
                                    beta=1.0, max_grad_norm=1.0,
                                    kl_annealing_start_epoch=200, kl_annealing_duration=200, kl_annealing_start=0.0001,
-                                   periodic_save_interval=50, mixed_precision=True):
+                                   periodic_save_interval=50, mixed_precision=True, save_dir="vae_models"):
     """
     Training loop for variational autoencoder with delayed sigmoid KL annealing.
     KL term has zero weight until kl_annealing_start_epoch, then anneals over kl_annealing_duration.
     """
+    import os
+    
+    # Create save directory
+    os.makedirs(save_dir, exist_ok=True)
+    
     torch.backends.cudnn.benchmark = True
 
     latent_dim = model.latent_dims if hasattr(model, 'latent_dims') else "unknown"
     dropout = model.encoder.dropout.p if hasattr(model, 'encoder') and hasattr(model.encoder, 'dropout') else "unknown"
     
-    model_filename = f"best_vae_model_ld{latent_dim}_dr{dropout}.pth"
+    model_filename = os.path.join(save_dir, f"best_vae_model_ld{latent_dim}_dr{dropout}.pth")
 
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, 'min', patience=5, factor=0.5)
@@ -665,11 +674,14 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         
         # Periodic saving every N epochs
         if (epoch + 1) % periodic_save_interval == 0:
-            periodic_model_path = f"vae_model_ld{latent_dim}_dr{dropout}_epoch_{epoch+1}.pth"
-            # Only create directory if the path contains one
-            dirname = os.path.dirname(periodic_model_path)
-            if dirname:  # Only create directory if path is not empty
-                os.makedirs(dirname, exist_ok=True)
+            periodic_model_path = os.path.join(save_dir, f"vae_model_ld{latent_dim}_dr{dropout}_epoch_{epoch+1}.pth")
+            # Remove an existing file/directory with the same name to avoid I/O errors
+            if os.path.exists(periodic_model_path):
+                if os.path.isfile(periodic_model_path):
+                    os.remove(periodic_model_path)
+                else:
+                    import shutil
+                    shutil.rmtree(periodic_model_path)
             torch.save(model.state_dict(), periodic_model_path)
             print(f"  Saved periodic VAE model at epoch {epoch+1} to {periodic_model_path}")
         
@@ -692,6 +704,8 @@ def train_variational_autoencoder(model, train_data, val_data, epochs=500, lr=0.
         "model_path": model_filename
     }
 
+# Standard autoencoder training: Trains a non-variational autoencoder for reconstruction
+# Simple reconstruction loss with mixed precision support
 def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device='cuda', max_grad_norm=1.0, mixed_precision=True):
     """
     Training loop for standard autoencoder
@@ -1245,6 +1259,8 @@ def save_site_predictions(true_sites, pred_sites, epoch, save_dir, prefix=''):
     
     print(f"Saved {prefix} site prediction data for epoch {epoch}")
 
+# Two-stage training: Stage 1 trains VAE/age/site predictors independently, Stage 2 combines them
+# Uses phased training with frozen predictors initially, then gradual unfreezing
 def train_vae_age_site_staged(
     vae_model,
     age_predictor,
@@ -2336,6 +2352,8 @@ def train_vae_age_site_staged(
     
     return results
 
+# Alternating adversarial training: Stage 1 independent training, Stage 2 alternates between 
+# optimizing VAE+age vs. optimizing site predictor in cycles to balance adversarial objectives
 def train_vae_age_site_alternating(
     vae_model,
     age_predictor,
@@ -3154,6 +3172,8 @@ def train_vae_age_site_alternating(
     
     return results
 
+# Improved alternating training: Enhanced version with adaptive cycle lengths and better
+# learning rate scheduling for more stable adversarial training dynamics
 def train_vae_age_site_alternating_improved(
     vae_model,
     age_predictor,
