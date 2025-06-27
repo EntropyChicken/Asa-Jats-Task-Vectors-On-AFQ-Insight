@@ -64,4 +64,6 @@ To customize experiments:
 
 See `requirements.txt` for a full list of dependencies.
 
-## Contributing
+## 
+
+This repo is meant to work in combination with https://github.com/SamChou05/AFQ-Insight-Autoencoder-Plotting. Experiment resulst should be copied into the plotting repository to convert csv files into plots/graphs. Saved model weights can also be used in the plotting repository to visualize reconstructions and gauge performance visually. 
