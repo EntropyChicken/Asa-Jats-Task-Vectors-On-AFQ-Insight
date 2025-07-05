@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Simple test for visualization functions.
-"""
+#Simple test to run visualization functions
 
 import torch
 import numpy as np
