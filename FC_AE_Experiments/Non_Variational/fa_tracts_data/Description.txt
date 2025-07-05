@@ -1,0 +1,40 @@
+# FA Tracts Experiments: Fully Connected Non-Variational Autoencoders
+
+## Purpose
+These experiments test standard fully connected autoencoders on FA-only tract data using flattened 
+input representations. The goal is to compare fully connected architectures against convolutional 
+approaches for brain tract reconstruction and determine whether spatial structure matters for this 
+type of data.
+
+## Experimental Setup
+
+### Data Preprocessing
+- **FA-Only**: Use only FA tracts
+- **Fully Flattened**: Concatenate all tract profiles into single vector input
+- **Dense Layers**: Use fully connected layers instead of convolutional layers
+
+### Main Experiments
+1. **Architecture Comparison**: Test fully connected vs convolutional autoencoder performance
+2. **Latent Dimension Search**: Test different bottleneck sizes for dense autoencoders
+3. **Reconstruction Quality**: Compare how well FC vs Conv architectures capture tract patterns
+
+### Training Approach
+- **Standard Reconstruction**: Basic autoencoder training without variational components
+- **Grid Search**: Systematic testing of layer sizes and dropout values
+- **Performance Comparison**: Direct comparison with convolutional results
+
+## Expected Findings
+
+### Architecture Analysis
+- **FC vs Conv Performance**: Does spatial structure matter for tract reconstruction?
+- **Parameter Efficiency**: How do parameter counts compare between architectures?
+- **Training Stability**: Which approach converges more reliably?
+
+### Methodological Insights
+- **Spatial Information**: Is convolution necessary for brain tract data?
+- **Reconstruction Patterns**: What types of tract features do FC autoencoders capture?
+
+### Outputs
+- Performance comparisons showing reconstruction quality (RMSE, R²)
+- Training curves comparing FC vs convolutional approaches
+- Analysis of which architecture works better for different types of tract data

@@ -1,0 +1,43 @@
+# First Tract Experiments: Fully Connected Variational Autoencoders
+
+## Purpose
+These experiments apply fully connected variational autoencoders to just the first brain tract from the AFQ dataset. The goal is to test whether dense layer VAEs can learn meaningful representations from single tract data and compare against convolutional VAE performance on simplified data.
+
+## Experimental Setup
+
+### Data Focus
+- **Single Tract**: Extract only the first tract (tract 0) from the 48-tract dataset
+- **Fully Connected**: Use dense layers instead of convolutional layers
+- **Variational**: Include KL divergence loss for regularized latent representations
+
+### Main Experiments
+1. **Architecture Validation**: Test fully connected VAE on simplified single-tract problem
+2. **Latent Dimension Search**: Find optimal bottleneck sizes for dense VAE architectures
+3. **FC vs Conv Comparison**: Compare fully connected and convolutional VAE performance
+
+### Training Approaches
+- **Standard VAE Training**: Reconstruction loss + KL divergence on single tract
+- **Hyperparameter Search**: Test different latent dimensions and regularization values
+- **Baseline Establishment**: Create performance benchmarks for FC VAE architectures
+
+## Expected Findings
+
+### Architecture Performance
+- **FC VAE Viability**: Can fully connected VAEs learn from brain tract data?
+- **Optimal Latent Size**: Which bottleneck dimensions work best for dense architectures?
+- **Training Stability**: How do FC VAEs compare to convolutional VAEs for convergence?
+
+### Methodological Insights
+- **Spatial vs Dense Processing**: Does spatial structure matter for single tract VAE learning?
+- **Parameter Efficiency**: How do parameter counts compare between FC and Conv VAEs?
+- **Representation Quality**: What types of tract features do dense VAEs capture?
+
+### Baseline Validation
+- **Single Tract Feasibility**: Is one tract sufficient for meaningful VAE representation learning?
+- **Architecture Choice**: When should researchers choose FC vs Conv for brain data?
+- **Computational Trade-offs**: Speed and memory differences between approaches
+
+## Key Outputs
+- Training curves showing reconstruction and KL losses for FC VAE
+- Latent space visualizations and quality metrics
+- Direct performance comparisons with convolutional VAE baselines
