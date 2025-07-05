@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Test script to verify updated visualization functions work correctly.
-"""
+#Simple test to run updated visualization functions
 
 import torch
 import numpy as np
