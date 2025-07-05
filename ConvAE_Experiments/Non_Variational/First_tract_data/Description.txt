@@ -1,0 +1,27 @@
+# First Tract Experiments: Non-Variational Convolutional Autoencoders
+
+## Purpose
+These experiments test standard convolutional autoencoders on just the first brain tract (tract 0) from the 48-tract dataset. The goal is to validate the autoencoder approach on a simplified single-tract problem and find optimal hyperparameters before scaling to multi-tract experiments.
+
+## Experimental Setup
+
+### Data Focus
+- **Single Tract**: Extract only the first tract (tract 0) from the full dataset
+- **FA + MD Data**: Use both Fractional Anisotropy and Mean Diffusivity measurements
+- **Baseline Validation**: Test fundamental autoencoder performance without multi-tract complexity
+
+### Two Main Experiments
+1. **Latent Dimension Search** (`conv_latent_dimensions.ipynb`): Test different latent sizes [2, 4, 8, 16, 32, 64, 100]
+2. **Combined Grid Search** (`conv_combined_experiment.ipynb`): Test dropout rates [0.0-0.5] × latent dimensions [10-100]
+
+## Expected Findings
+
+### Architecture Validation
+- **Method Validation**: Can autoencoders effectively learn single tract representations?
+- **Optimal Latent Size**: Which dimensions work best for single tract reconstruction?
+- **Regularization Effects**: How does dropout affect performance on simplified data?
+
+### Outputs
+- Performance heatmaps showing RMSE across hyperparameter combinations
+- Training curves comparing different latent dimensions
+- Baseline metrics for comparison with multi-tract experiments

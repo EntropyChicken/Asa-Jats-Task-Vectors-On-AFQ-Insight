@@ -1,0 +1,46 @@
+# FA Tracts Experiments: Variational Autoencoders with Flattened Data
+
+## Purpose
+These experiments focus specifically on FA tract data using variational autoencoders with flattened input representations.
+The goal is to test whether simplifying the data to FA-only measurements while flattening the fa tracts 
+into a single vector improves model performance and training stability.
+
+## Experimental Setup
+
+### Data Preprocessing
+- **FA-Only**: Use only FA measurements (24 tracts)
+- **Flattened Format**: Concatenate all tract profiles into single 2400-dimensional vector
+- **Simplified Input**: Single channel input instead of multi-tract structure
+
+### Three Main Experiments
+1. **Hyperparameter Search** (`vaeconv_combined_fa_flattened.py`): Test latent dimensions (2-100) and dropout values (0.0-0.5)
+2. **Staged Training** (`vae_age_site_stages.py`): Two-stage approach with VAE + age/site prediction
+3. **Combined Training** (`vae_age_site_conv_combined_fa_flattened.py`): Joint optimization with different loss weight combinations
+
+### Training Approaches
+- **Stage 1**: Train VAE, age predictor, and site predictor separately
+- **Stage 2**: Combined adversarial training with gradient reversal
+- **Grid Search**: Test multiple combinations of reconstruction, KL, age, and site loss weights
+
+## Expected Findings
+
+### Model Performance
+- **Optimal Architecture**: Which latent dimensions and dropout values work best for FA data?
+- **Loss Weight Balance**: How should reconstruction, age, and site losses be weighted?
+- **Training Stability**: Does flattened input improve convergence compared to structured input?
+
+### Methodological Insights
+- **Flattened vs Structured**: Does flattening simplify learning or lose important spatial information?
+- **FA-Only Benefits**: Is FA sufficient for age prediction and site removal, or is additional DTI info needed?
+- **Hyperparameter Sensitivity**: How sensitive are results to latent dimensions and regularization?
+
+### Data Representation
+- **Compression Ability**: Can VAE effectively compress 2400-dimensional flattened FA data?
+- **Age Prediction**: How well can flattened FA data predict biological age?
+- **Site Harmonization**: Does adversarial training remove scanner effects from FA measurements?
+
+## Key Outputs
+- Hyperparameter heatmaps showing optimal latent dimensions and dropout combinations
+- Training curves comparing different loss weight configurations
+- Performance metrics for age prediction and site classification
+- Comparison between staged and joint training approaches on simplified data structure

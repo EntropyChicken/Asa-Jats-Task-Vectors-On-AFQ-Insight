@@ -1,0 +1,41 @@
+# First Tract Experiments: Variational Autoencoders on Single Tract Data
+
+## Purpose
+These experiments apply variational autoencoders to just the first brain tract from the AFQ dataset.
+The goal is to establish baseline performance and validate the VAE approach on a simpler, single-tract dataset 
+before scaling to more the more complicated multi tract experiments.
+
+## Experimental Setup
+
+### Data Focus
+- **Single Tract**: Extract only the first tract (tract 0) from the 48-tract dataset
+
+### Two Main Experiments
+1. **Hyperparameter Search** (`conv_combined_first_tract.ipynb`): Test latent dimensions (2-100) and dropout values (0.0-0.5) 
+2. **Staged Training** (`vae_age_site_stages_first_tract.py`): Two-stage approach with VAE + age/site prediction on single tract
+
+### Training Approaches
+- **Stage 1**: Train VAE, age predictor, and site predictor separately on first tract data
+- **Stage 2**: Combined adversarial training with gradient reversal
+- **Grid Search**: Systematic testing of latent dimensions and regularization parameters
+
+### Model Performance  
+- **Baseline Validation**: Can VAE effectively learn representations from single tract data?
+- **Optimal Architecture**: Which latent dimensions - dropout values work best for single tract reconstruction?
+- **Age Prediction**: How well can one tract predict biological age?
+
+### Methodological Insights
+- **Architecture Validation**: Does the VAE approach work before scaling up?
+- **Hyperparameter Sensitivity**: How do latent dimensions and dropout affect single tract learning?
+- **Training Stability**: Are there convergence issues that need addressing before multi-tract experiments?
+
+### Comparative Analysis
+- **Single vs Multi-Tract**: How much information is lost by using only one tract?
+- **Site Effects**: Can adversarial training remove scanner effects from single tract data?
+- **Complexity Trade-off**: Does simplification improve or hurt performance?
+
+## Key Outputs
+- Hyperparameter heatmaps showing optimal configurations for single tract data
+- Validation that VAE architecture works on simplified brain connectivity data
+- Baseline performance metrics for comparison with multi-tract experiments
+- Reconstruction quality examples showing original vs reconstructed tract profiles

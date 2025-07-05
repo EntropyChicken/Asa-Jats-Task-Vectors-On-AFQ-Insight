@@ -1,0 +1,30 @@
+# FA Tracts Experiments: Non-Variational Convolutional Autoencoders
+
+## Purpose
+These experiments test non variational convolutional autoencoders on FA-only tract data using a flattened input format.
+The goal is to find optimal hyperparameters for reconstruction tasks without added complexity of
+variational layers or multi-task learning.
+
+## Experimental Setup
+
+### Data Preprocessing
+- **FA-Only**: Use only Fractional Anisotropy measurements 
+- **Flattened Format**: Concatenate all tract profiles into single 2400-dimensional vector
+- **Standard Autoencoder**: Basic reconstruction task without variational components
+
+### Three Main Experiments
+1. **Latent Dimension Search** (`aeconv_latent_dims_fa.ipynb`): Test different latent sizes [2, 4, 6, 8, 16, 32, 64, 100]
+2. **Dropout Analysis** (`aeconv_dropout_fa_flattened.ipynb`): Test regularization with different dropout rates
+3. **Combined Grid Search** (`aeconv_combined_fa_flattened.py`): Systematic testing of latent dimensions × dropout combinations
+
+## Expected Findings
+
+### Reconstruction Performance
+- **Optimal Latent Size**: Which dimensions best capture FA tract patterns?
+- **Regularization Effects**: How does dropout affect reconstruction quality?
+- **Architecture Validation**: Baseline performance for comparison with variational models
+
+### Outputs
+- Performance heatmaps showing RMSE across hyperparameter combinations
+- Training curves for each configuration
+- CSV files with detailed metrics for further analysis

@@ -1,0 +1,40 @@
+# All Tracts Experiments: Variational Autoencoders with Multi-Task Learning
+
+## Purpose
+These experiments apply variational autoencoders to all 48 brain tracts simultaneously while training the model to predict age and remove site effects. The goal is to learn useful brain representations that work across different scanning sites and can predict biological age.
+
+## Experimental Setup
+
+### Three Main Components
+1. **VAE Reconstruction**: Learn to compress and reconstruct all 48 tract profiles
+2. **Age Prediction**: Predict participant age from brain data  
+3. **Site Removal**: Use adversarial training to remove scanner-specific effects
+
+### Training Approach
+- **Stage 1**: Train each component separately (500-1000 epochs)
+- **Stage 2**: Train all components together with adversarial loss (1000-2000 epochs)
+- **Adversarial Training**: Site predictor tries to identify scan site while VAE learns to hide site information
+
+### Data Configurations
+- `vae_age_site_stages_all.py`: All 48 tracts (full dataset)
+- `vae_age_site_stages_fa.py`: 24 FA tracts only 
+- `ae_age_site_stages_fa.py`: Non-variational comparison
+
+## Expected Findings
+
+### Model Performance
+- **Age Prediction Accuracy**: How well can brain connectivity predict age?
+- **Site Effect Removal**: Does adversarial training improve cross-site generalization?
+- **Reconstruction Quality**: Can the model accurately reconstruct complex multi-tract data?
+
+### Methodological Insights  
+- **VAE vs Standard AE**: Does variational training provide benefits for brain data?
+- **Staged vs Joint Training**: Which training approach works better?
+- **Full vs FA-only**: Does simplifying the problem by only using fa tracts, or is the cross tract 
+information from all of the tracts more valuable to creating site invariant information.
+
+## Key Outputs
+- Training metrics for reconstruction, age prediction, and site classification
+- Confusion matrices showing site classification performance over time
+- Comparison between different training approaches and data configurations
+- Learned latent representations that could be used for downstream analysis

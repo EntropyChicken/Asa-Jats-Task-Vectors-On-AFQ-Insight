@@ -10,6 +10,8 @@ from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 import contextlib  # Local import to avoid adding a global dependency
 import os
 
+# Beta annealing scheduler: starts at 0, then smoothly increases to 1 using sigmoid
+# Used for KL divergence weight in VAE training
 def get_beta(current_epoch, total_epochs, start_epoch=100):
     if current_epoch < start_epoch:
         return 0.0
@@ -369,9 +371,11 @@ def train_variational_autoencoder_age_site(
  
      return results
  
+# Prepares FA data with site remapping for adversarial training
+# Filters out problematic sites (original sites are 0,1,3,4) and remaps site IDs to consecutive integers
 def prep_fa_flattened_remapped_data(dataset, batch_size=64, site_col_name='scan_site_id', age_col_name='age', omit_site_idx=None):
-     # 1. Prepare FA-only dataset first (reuse existing logic)
-     # Assuming target_labels="dki_fa" is appropriate for selecting FA features
+    # 1. Prepare FA-only dataset first (reuse existing logic)
+    # Assuming target_labels="dki_fa" is appropriate for selecting FA features
      torch_dataset_fa, train_loader_fa, test_loader_fa, val_loader_fa = prep_fa_dataset(
          dataset, target_labels=["dki_fa", "dki_md"], batch_size=batch_size
      )
@@ -853,12 +857,14 @@ def train_autoencoder(model, train_data, val_data, epochs=500, lr=0.001, device=
         "model_path": model_filename
     }
 
+# Standard KL divergence loss for VAE: measures how far the learned distribution is from a standard Gaussian
 def kl_divergence_loss(mean, logvar):
     """
     KL divergence between the learned distribution and a standard Gaussian.
     """
     return -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
 
+# Complete VAE loss function: reconstruction error + weighted KL divergence
 def vae_loss(x, x_hat, mean, logvar, kl_weight=1.0, reduction="sum"):
     """
     Combined VAE loss: reconstruction + KL divergence
@@ -874,6 +880,8 @@ def vae_loss(x, x_hat, mean, logvar, kl_weight=1.0, reduction="sum"):
 
     return total_loss, recon_loss, kl_loss
 
+# Automatically picks the best available device (CUDA > MPS > CPU)
+# Also prints device info and memory usage for debugging
 def select_device():
     if torch.cuda.is_available():
         device = torch.device('cuda')
@@ -962,6 +970,8 @@ def prep_fa_flattned_data(dataset, batch_size=64):
         all_tracts_val_loader,
     )
 
+# Extracts only FA measurements from the dataset and creates dataloaders
+# Filters out MD, GA, and other diffusion metrics to focus on FA only
 def prep_fa_dataset(dataset, target_labels="dki_fa", batch_size=32):
     """
     Extracts features that match the specified label from the provided dataset and
@@ -1016,6 +1026,8 @@ def prep_fa_dataset(dataset, target_labels="dki_fa", batch_size=32):
     )
     return prep_pytorch_data(dataset_fa, batch_size=batch_size)
 
+# Creates paired tract data by concatenating adjacent tracts together
+# Turns 48 tracts into 24 pairs for data augmentation
 def prep_fa_dataset_paired(dataset, target_labels="dki_fa", batch_size=32):
     """
     Extracts features that match the specified label and pairs adjacent tracts.
@@ -1072,6 +1084,8 @@ def prep_fa_dataset_paired(dataset, target_labels="dki_fa", batch_size=32):
     
     return torch_dataset, train_loader_paired, test_loader_paired, val_loader_paired
 
+# Extracts just the first tract (tract 0) from the dataset for single-tract experiments
+# Useful for baseline validation and hyperparameter tuning
 def prep_first_tract_data(dataset, batch_size=32):
     """
     Prepares PyTorch dataloaders for training, testing, and validation.
@@ -1148,10 +1162,13 @@ class GradReverse(torch.autograd.Function):
         output = grad_output.neg() * ctx.alpha
         return output, None
 
+# Simple wrapper to apply gradient reversal with a specified alpha
 def grad_reverse(x, alpha=1.0):
     """Helper function to apply the Gradient Reversal Layer."""
     return GradReverse.apply(x, alpha)
 
+# Calculates R² score (coefficient of determination) for regression tasks
+# Handles NaN values and gives diagnostic info when verbose=True
 def calculate_r2_score(y_true, y_pred, verbose=False):
     """
     Calculate the coefficient of determination (R²) between true and predicted values.
@@ -1225,6 +1242,7 @@ def calculate_r2_score(y_true, y_pred, verbose=False):
     # Return as Python float
     return r2.item()
 
+# Saves site prediction results to disk for creating confusion matrices later
 def save_site_predictions(true_sites, pred_sites, epoch, save_dir, prefix=''):
     """
     Save site prediction data to create confusion matrices.
@@ -2354,6 +2372,8 @@ def train_vae_age_site_staged(
 
 # Alternating adversarial training: Stage 1 independent training, Stage 2 alternates between 
 # optimizing VAE+age vs. optimizing site predictor in cycles to balance adversarial objectives
+# Alternating training approach: switches between age prediction and site removal training
+# Uses cycles to balance the competing objectives instead of training them simultaneously
 def train_vae_age_site_alternating(
     vae_model,
     age_predictor,
@@ -3174,6 +3194,8 @@ def train_vae_age_site_alternating(
 
 # Improved alternating training: Enhanced version with adaptive cycle lengths and better
 # learning rate scheduling for more stable adversarial training dynamics
+# Improved alternating training with adaptive cycle lengths and better loss balancing
+# Adjusts cycle length based on training progress and performance
 def train_vae_age_site_alternating_improved(
     vae_model,
     age_predictor,
@@ -3528,6 +3550,7 @@ def train_vae_age_site_alternating_improved(
     combined_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         combined_optimizer, "min", patience=8, factor=0.7, verbose=False
     )
+    # Helper function to adjust learning rates based on current training phase
     def adjust_learning_rates(optimizer, phase, age_weight, site_weight, base_lr):
         if "age" in phase:
             optimizer.param_groups[0]['lr'] = base_lr
