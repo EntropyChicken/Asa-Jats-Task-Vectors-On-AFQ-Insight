@@ -45,7 +45,7 @@ import matplotlib.pyplot as plt
 
 import sys 
 # sys.path.insert(1, '/Users/samchou/AFQ-Insight-Autoencoder-Experiments/AFQ-Insight-Autoencoder-Experiments/Experiment_Utils')
-sys.path.insert(1, 'C:/Users/yunbi/AFQ-Insight-Autoencoder-Experiments/Experiment_Utils')
+sys.path.insert(1, './Experiment_Utils') # code should be run from root path of this project "AFQ-Insight-Autoencoder-Experiments"
 from utils import train_variational_autoencoder, train_autoencoder, select_device, prep_fa_dataset, prep_first_tract_data, prep_fa_flattned_data
 from models import Conv1DAutoencoder_fa
 
