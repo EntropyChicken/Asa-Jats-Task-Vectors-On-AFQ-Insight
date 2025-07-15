@@ -1024,7 +1024,8 @@ def prep_fa_dataset(dataset, target_labels="dki_fa", batch_size=32):
         sessions=dataset.sessions,
         classes=dataset.classes,
     )
-    return prep_pytorch_data(dataset_fa, batch_size=batch_size)
+    #return prep_pytorch_data(dataset_fa, batch_size=batch_size)
+    return prep_pytorch_data(dataset_fa)
 
 # Creates paired tract data by concatenating adjacent tracts together
 # Turns 48 tracts into 24 pairs for data augmentation

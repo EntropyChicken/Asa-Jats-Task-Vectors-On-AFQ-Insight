@@ -29,7 +29,9 @@ ConvAE_Experiments/Variational/first_tract_data/vae_age_site_stages_first_tract.
 Experiment_Utils/models.py
 Experiment_Utils/overfit_utils.py
 Experiment_Utils/utils.py
+FC_AE_Experiments/Non_Variational/fa_tracts_data/Description.txt
 FC_AE_Experiments/Non_Variational/fa_tracts_data/fcae_combined_fa_flattened.ipynb
+FC_AE_Experiments/Variational/first_tract_data/Description.txt
 FC_AE_Experiments/Variational/first_tract_data/fc_combined_experiment.ipynb
 FC_AE_Experiments/Variational/first_tract_data/fc_latent_experiment.ipynb
 afq_insight_experiments.egg-info/PKG-INFO

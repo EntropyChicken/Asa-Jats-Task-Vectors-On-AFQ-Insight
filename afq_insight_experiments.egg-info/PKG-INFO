@@ -1,4 +1,4 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: afq_insight_experiments
 Version: 0.1.0
 Summary: Autoencoder experiments for AFQ-Insight neuroimaging data analysis
@@ -20,7 +20,7 @@ Requires-Python: >=3.8
 Description-Content-Type: text/markdown
 Requires-Dist: torch>=2.0.0
 Requires-Dist: torchvision>=0.15.0
-Requires-Dist: numpy>=1.24.0
+Requires-Dist: numpy<2.0.0,>=1.24.0
 Requires-Dist: matplotlib>=3.7.0
 Requires-Dist: pandas>=2.0.0
 Requires-Dist: seaborn>=0.12.0
@@ -31,179 +31,130 @@ Requires-Dist: ipywidgets>=8.0.0
 Requires-Dist: tqdm>=4.65.0
 Requires-Dist: pytest>=7.0.0
 Requires-Dist: setuptools>=65.0.0
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
 
 # AFQ-Insight Autoencoder Experiments
 
-This repository contains comprehensive experiments applying convolutional autoencoders and variational autoencoders to diffusion MRI brain connectivity data from the AFQ-Insight HBN dataset. The experiments focus on learning brain representations for age prediction and site effect removal using adversarial training.
+This repository contains experiments applying convolutional autoencoders and variational autoencoders to diffusion MRI brain connectivity data from the AFQ-Insight HBN dataset. The main focus is on learning brain representations for age prediction and removing site effects using adversarial training.
 
-## 📁 Project Structure
+## What's in this repository
 
-```
-AFQ-Insight-Autoencoder-Experiments/
-├── ConvAE_Experiments/           # Main experimental code
-│   ├── Non_Variational/          # Standard autoencoder experiments
-│   │   ├── First_tract_data/     # Single tract (tract 0) experiments
-│   │   └── Fa_tracts_data/       # FA-only tract experiments
-│   └── Variational/              # Variational autoencoder experiments
-│       ├── all_tracts/           # All 48 tracts with multi-task learning
-│       ├── fa_tracts_data/       # FA-only VAE experiments
-│       └── first_tract_data/     # Single tract VAE experiments
-├── FC_AE_Experiments/            # Fully connected autoencoder experiments
-├── evaluating_tracts/            # Individual tract importance analysis
-├── Experiment_Utils/             # Core utilities and model definitions
-│   ├── models.py                 # Autoencoder architectures
-│   ├── utils.py                  # Data processing and training functions
-│   └── overfit_utils.py          # Overfitting analysis tools
-├── batch_scripts/                # HPC batch job scripts
-└── tests/                        # Test files
-```
+The experiments are organized into several main directories:
 
-## 🚀 Installation
+- **ConvAE_Experiments/** - The main experimental code
+  - **Non_Variational/** - Standard autoencoder experiments
+    - **First_tract_data/** - Single tract (tract 0) experiments for validation
+    - **Fa_tracts_data/** - FA-only tract experiments  
+  - **Variational/** - Variational autoencoder experiments
+    - **all_tracts/** - All 48 tracts with multi-task learning
+    - **fa_tracts_data/** - FA-only VAE experiments
+    - **first_tract_data/** - Single tract VAE experiments
+- **FC_AE_Experiments/** - Fully connected autoencoder experiments (less developed)
+- **evaluating_tracts/** - Individual tract importance analysis
+- **Experiment_Utils/** - Core utilities and model definitions
+- **batch_scripts/** - SLURM batch job scripts for HPC systems
+- **tests/** - Test files to verify installation
 
-### Prerequisites
-- Python 3.8+
-- CUDA-compatible GPU (recommended)
-- 8GB+ RAM
-- AFQ-Insight compatible diffusion MRI data
+## Getting started
+### Installation
 
-### Setup Instructions
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/yourusername/AFQ-Insight-Autoencoder-Experiments.git
-   cd AFQ-Insight-Autoencoder-Experiments
-   ```
-
-2. **Create and activate virtual environment:**
-   ```bash
-   # Using conda (recommended)
-   conda create -n afq_experiments python=3.11
-   conda activate afq_experiments
-   
-   # Or using venv
-   python -m venv afq_experiments
-   source afq_experiments/bin/activate  # Linux/Mac
-   # afq_experiments\Scripts\activate  # Windows
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Install the package in development mode:**
-   ```bash
-   pip install -e .
-   ```
-
-## 📊 Data Requirements
-
-The experiments require AFQ tractometry data compatible with the `afqinsight` package. The data should include:
-
-- **48 brain tracts** with diffusion measurements (FA, MD, etc.)
-- **Participant metadata** including age and scanning site
-- **Standard AFQ-Insight format** (see [AFQ-Insight documentation](https://yeatmanlab.github.io/AFQ-Insight/))
-
-Expected data structure:
-```
-your_afq_data/
-├── nodes/          # Individual tract node data
-├── profiles/       # Tract profile data  
-└── subjects.csv    # Participant metadata (age, site, etc.)
-```
-
-## 🔬 Running Experiments
-
-### Option 1: Interactive Jupyter Notebooks
-
-1. **Start Jupyter:**
-   ```bash
-   jupyter notebook
-   ```
-
-2. **Navigate to experiment folders and run notebooks:**
-   - `ConvAE_Experiments/Non_Variational/First_tract_data/conv_combined_experiment.ipynb`
-   - `ConvAE_Experiments/Variational/all_tracts/vae_age_site_stages_all.ipynb`
-   - `ConvAE_Experiments/Variational/fa_tracts_data/vae_age_site_stages.ipynb`
-
-### Option 2: Python Scripts
-
-1. **Single tract experiments:**
-   ```bash
-   cd ConvAE_Experiments/Variational/first_tract_data
-   python vae_age_site_stages_first_tract.py
-   ```
-
-2. **All tracts with multi-task learning:**
-   ```bash
-   cd ConvAE_Experiments/Variational/all_tracts
-   python vae_age_site_stages_all.py
-   ```
-
-3. **FA-only experiments:**
-   ```bash
-   cd ConvAE_Experiments/Variational/fa_tracts_data
-   python vae_age_site_stages.py
-   ```
-
-### Option 3: HPC Batch Jobs
-
-For large-scale experiments on HPC systems:
+First, clone this repository:
 
 ```bash
-# Submit batch jobs
+git clone https://github.com/yourusername/AFQ-Insight-Autoencoder-Experiments.git
+cd AFQ-Insight-Autoencoder-Experiments
+```
+
+Create a virtual environment. I recommend using conda:
+
+```bash
+conda create -n afq_experiments python=3.11
+conda activate afq_experiments
+```
+
+Or if you prefer regular Python virtual environments:
+
+```bash
+python -m venv afq_experiments
+source afq_experiments/bin/activate  # On Linux/Mac
+```
+
+Install the dependencies:
+
+```bash
+pip install -r requirements.txt
+pip install -e .
+```
+
+Test that everything works:
+
+```bash
+python tests/test_installation.py
+```
+
+See the [AFQ-Insight documentation](https://yeatmanlab.github.io/AFQ-Insight/) for more details on the data format.
+
+## Running experiments
+
+### Using Jupyter notebooks
+
+Start Jupyter and navigate to the experiment folders:
+
+```bash
+jupyter notebook
+```
+
+The main notebooks to try:
+- `ConvAE_Experiments/Non_Variational/First_tract_data/conv_combined_experiment.ipynb`
+- `ConvAE_Experiments/Variational/all_tracts/vae_age_site_stages_all.ipynb`
+- `ConvAE_Experiments/Variational/fa_tracts_data/vae_age_site_stages.ipynb`
+
+Use the batch scripts mainly to run 
+
+```bash
 sbatch batch_scripts/run_notebook_vae_age_site_stages.sbatch
 sbatch batch_scripts/run_notebook_vae_age_site_stages_all_tract.sbatch
 ```
 
-## 🧪 Experiment Types
+## Types of experiments
 
-### 1. Non-Variational Autoencoders
-- **Purpose**: Baseline autoencoder performance
-- **Location**: `ConvAE_Experiments/Non_Variational/`
-- **Key Features**: Standard reconstruction, hyperparameter search
+### Standard autoencoders
 
-### 2. Variational Autoencoders (VAE)
-- **Purpose**: Advanced representation learning with age prediction and site removal
-- **Location**: `ConvAE_Experiments/Variational/`
-- **Key Features**: 
-  - Multi-task learning (reconstruction + age prediction + site removal)
-  - Adversarial training for site effect removal
-  - Staged training approaches
+These are in `ConvAE_Experiments/Non_Variational/`. They focus on basic reconstruction tasks and hyperparameter optimization. Good for establishing baselines and validating that the autoencoder approach works.
 
-### 3. Tract Importance Analysis
-- **Purpose**: Identify which brain tracts are most predictive of age
-- **Location**: `evaluating_tracts/`
-- **Usage**:
-  ```bash
-  cd evaluating_tracts
-  python tract_importance_evaluation.py --output-dir results_fa_only
-  ```
+### Variational autoencoders 
 
-## 📈 Expected Outputs
+These are more advanced and live in `ConvAE_Experiments/Variational/`. They do multi-task learning: reconstruction, age prediction, and site effect removal using adversarial training. This is where most of the interesting work happens.
 
-### Training Metrics
-- **Reconstruction loss** (MSE)
-- **Age prediction accuracy** (MAE, R²)
-- **Site classification accuracy** (for adversarial training)
-- **KL divergence** (for VAE models)
+### Tract importance analysis
 
-### Result Files
-- `training_metrics.csv`: Complete training history
-- `*_predictions.csv`: Model predictions on validation data
-- `site_confusion_matrix_*.png`: Site classification performance
-- `*.pth`: Saved model weights
+The `evaluating_tracts/` directory contains code to figure out which brain tracts are most important for age prediction. Run it like:
 
-### Visualization
-Results can be visualized using the companion repository:
-[AFQ-Insight-Autoencoder-Plotting](https://github.com/SamChou05/AFQ-Insight-Autoencoder-Plotting)
+```bash
+cd evaluating_tracts
+python tract_importance_evaluation.py --output-dir results_fa_only
+```
 
-## 🔧 Customization
+Use the other repository addressed below to plot or visualize experiment results. 
 
-### Modifying Hyperparameters
-Edit the hyperparameter sections in notebooks or scripts:
+For visualization, you can use the companion repository [AFQ-Insight-Autoencoder-Plotting](https://github.com/SamChou05/AFQ-Insight-Autoencoder-Plotting) to create plots and graphs from the CSV files.
+
+## Customizing experiments
+
+### Changing hyperparameters
+
+Look for sections like this in the notebooks or scripts:
+
 ```python
-# Example configuration
 latent_dims = [32, 64, 128]
 dropout_values = [0.0, 0.1, 0.2]
 w_recon = 1.0      # Reconstruction weight
@@ -212,80 +163,54 @@ w_age = 15.0       # Age prediction weight
 w_site = 5.0       # Site adversarial weight
 ```
 
-### Adding New Models
-1. Define model architecture in `Experiment_Utils/models.py`
-2. Add training logic in `Experiment_Utils/utils.py`
-3. Create experiment script using existing templates
+### Adding new models
 
-### Data Preprocessing
-Modify data preparation functions in `Experiment_Utils/utils.py`:
-- `prep_fa_dataset()`: FA-only data
-- `prep_first_tract_data()`: Single tract data
-- `prep_fa_flattened_remapped_data()`: Site-remapped data
+1. Define your model architecture in `Experiment_Utils/models.py`
+2. Add any new training logic to `Experiment_Utils/utils.py`
+3. Create an experiment script based on existing ones
 
-## 🐛 Testing
+### Modifying data preprocessing
 
-Run tests to verify installation:
-```bash
-pytest tests/
+The main data preparation functions are in `Experiment_Utils/utils.py`:
+- `prep_fa_dataset()` - For FA-only data
+- `prep_first_tract_data()` - For single tract data
+- `prep_fa_flattened_remapped_data()` - For site-remapped data
+
+See `requirements.txt` for the complete list.
+
+## Related work
+
+- [AFQ-Insight](https://github.com/yeatmanlab/AFQ-Insight) - The core AFQ analysis framework
+- [AFQ-Insight-Autoencoder-Plotting](https://github.com/SamChou05/AFQ-Insight-Autoencoder-Plotting) - Visualization tools for results
+- [pyAFQ](https://github.com/yeatmanlab/pyAFQ)
+
+## Acknowledgments
+
+Thanks to the UW Neuroinformatics R&D Group for research support!
+
+## License
+
+This project is licensed under the MIT License:
+
 ```
+MIT License
 
-## 📋 Requirements
+Copyright (c) 2024 AFQ-Insight Autoencoder Experiments Contributors
 
-### Core Dependencies
-- `torch>=2.0.0`: PyTorch deep learning framework
-- `afqinsight>=0.3.0`: AFQ-Insight data handling
-- `numpy>=1.24.0`: Numerical computing
-- `pandas>=2.0.0`: Data manipulation
-- `scikit-learn>=1.3.0`: Machine learning metrics
-- `matplotlib>=3.7.0`: Visualization
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-### Development Dependencies
-- `jupyter>=1.0.0`: Interactive notebooks
-- `pytest>=7.0.0`: Testing framework
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-See `requirements.txt` for complete dependency list.
-
-## 📖 Citation
-
-If you use this code in your research, please cite:
-
-```bibtex
-@misc{chou2024afqinsight,
-  title={AFQ-Insight Autoencoder Experiments},
-  author={Chou, Sam},
-  year={2024},
-  url={https://github.com/yourusername/AFQ-Insight-Autoencoder-Experiments}
-}
-```
-
-## 🔗 Related Projects
-
-- [AFQ-Insight](https://github.com/yeatmanlab/AFQ-Insight): Core AFQ analysis framework
-- [AFQ-Insight-Autoencoder-Plotting](https://github.com/SamChou05/AFQ-Insight-Autoencoder-Plotting): Visualization tools
-- [pyAFQ](https://github.com/yeatmanlab/pyAFQ): Automated fiber quantification
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the `LICENSE` file for details.
-
-## 🆘 Support
-
-For issues and questions:
-1. Check the [Issues](https://github.com/yourusername/AFQ-Insight-Autoencoder-Experiments/issues) page
-2. Review experiment-specific Description.txt files in each folder
-3. Contact the UW Neuroinformatics R&D Group
-
-## 🏥 Acknowledgments
-
-- **UW Neuroinformatics R&D Group**: Research support and guidance
-- **AFQ-Insight Team**: Core framework development
-- **Healthy Brain Network**: Data provision 
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

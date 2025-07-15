@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 from torch.distributions.normal import Normal
 from sklearn.decomposition import PCA
 import afqinsight.augmentation as aug
-from afqinsight.nn.pt_models import Conv1DAutoencoder
+#from afqinsight.nn.pt_models import Conv1DAutoencoder
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -45,7 +45,7 @@ import matplotlib.pyplot as plt
 
 import sys 
 # sys.path.insert(1, '/Users/samchou/AFQ-Insight-Autoencoder-Experiments/AFQ-Insight-Autoencoder-Experiments/Experiment_Utils')
-sys.path.insert(1, '/mmfs1/gscratch/nrdg/samchou/AFQ-Insight-Autoencoder-Experiments/Experiment_Utils')
+sys.path.insert(1, 'C:/Users/yunbi/AFQ-Insight-Autoencoder-Experiments/Experiment_Utils')
 from utils import train_variational_autoencoder, train_autoencoder, select_device, prep_fa_dataset, prep_first_tract_data, prep_fa_flattned_data
 from models import Conv1DAutoencoder_fa
 
@@ -56,11 +56,13 @@ from models import Conv1DAutoencoder_fa
 device = select_device()
 
 
+
 # In[9]:
 
 
 dataset = AFQDataset.from_study('hbn')
-torch_dataset, train_loader, test_loader, val_loader = prep_pytorch_data(dataset,batch_size=256)  
+#torch_dataset, train_loader, test_loader, val_loader = prep_pytorch_data(dataset,batch_size=256)  
+torch_dataset, train_loader, test_loader, val_loader = prep_pytorch_data(dataset)  
 gt_shape = torch_dataset[0][1].size()[0]
 sequence_length = torch_dataset[0][0].size()[0]  # 48
 in_channels = torch_dataset[0][0].size()[1]  # 100
@@ -94,7 +96,7 @@ for dropout in dropout_values:
             model=test_model,
             train_data=all_tracts_train_loader,
             val_data=all_tracts_val_loader,
-            epochs=500,   # or more epochs
+            epochs=50,   # or more epochs
             device=device
         )
         
